@@ -1,0 +1,399 @@
+import React, { useState } from 'react';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { StorageProvider, useStorage } from './context/StorageContext';
+
+import { ParticleCanvas } from './components/ParticleCanvas';
+import { Sidebar } from './components/Sidebar';
+import { Navbar } from './components/Navbar';
+import { Breadcrumbs } from './components/Breadcrumbs';
+import { VaultHeroBanner } from './components/VaultHeroBanner';
+import { FileGrid } from './components/FileGrid';
+import { FileList } from './components/FileList';
+import { ConverterStudioPage } from './components/ConverterStudioPage';
+import { AuthLandingPage } from './components/AuthLandingPage';
+import { ProfilePage } from './components/ProfilePage';
+
+import { UploadModal } from './components/UploadModal';
+import { NewFolderModal } from './components/NewFolderModal';
+import { FilePreviewModal } from './components/FilePreviewModal';
+import { StorageAnalyticsModal } from './components/StorageAnalyticsModal';
+import { ShareModal } from './components/ShareModal';
+import { AuthModal } from './components/AuthModal';
+
+import { CommandPalette } from './components/CommandPalette';
+import { ActivityLogDrawer } from './components/ActivityLogDrawer';
+import { MediaPlayerBar } from './components/MediaPlayerBar';
+import { BatchActionBar } from './components/BatchActionBar';
+import { VaultPasscodeModal } from './components/VaultPasscodeModal';
+import { AiCopilotDrawer } from './components/AiCopilotDrawer';
+
+import { ToastContainer } from './components/Toast';
+import { UploadProgressBar } from './components/UploadProgressBar';
+
+import { SubscriptionModal } from './components/SubscriptionModal';
+import { MusicStudioModal } from './components/MusicStudioModal';
+import { SharedFilePage } from './components/SharedFilePage';
+import { MoveToFolderModal } from './components/MoveToFolderModal';
+import { WindowsDriveModal } from './components/WindowsDriveModal';
+
+import { UploadCloud, Command, Loader2, Folder, Sliders, User } from 'lucide-react';
+
+function AppContent() {
+  const { user, authLoading } = useAuth();
+  const { moveModalTarget, setMoveModalTarget } = useStorage();
+  const params = new URLSearchParams(window.location.search);
+  const shareId = params.get('share');
+  const sharePass = params.get('pass');
+
+  if (shareId) {
+    return <SharedFilePage sharedFileId={shareId} requiredPasscode={sharePass} />;
+  }
+  const {
+    activeCategory,
+    setActiveCategory,
+    viewMode,
+    uploadFiles,
+    setIsUploadOpen,
+    isSubscriptionOpen,
+    setIsSubscriptionOpen,
+    isMusicStudioOpen,
+    setIsMusicStudioOpen,
+    currentMusicTrack,
+    isMusicPlaying,
+    setIsMusicPlaying,
+    isMusicMuted,
+    isMusicLooping
+  } = useStorage();
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isWindowDragActive, setIsWindowDragActive] = useState(false);
+  const [isAiCopilotOpen, setIsAiCopilotOpen] = useState(false);
+
+  const globalAudioRef = React.useRef(null);
+
+  // Sync background music playback globally across all views & page reloads
+  React.useEffect(() => {
+    const audio = globalAudioRef.current;
+    if (!audio) return;
+
+    // Restore saved playback timestamp on fresh open / refresh
+    try {
+      const savedTime = sessionStorage.getItem('storagebank_music_time');
+      if (savedTime && !isNaN(parseFloat(savedTime)) && audio.currentTime === 0) {
+        audio.currentTime = parseFloat(savedTime);
+      }
+    } catch {}
+
+    if (isMusicPlaying) {
+      const attemptPlay = () => {
+        const promise = audio.play();
+        if (promise !== undefined) {
+          promise.then(() => {
+            // Playing successfully without block!
+          }).catch(() => {
+            // Autoplay blocked by browser policy — trigger immediately on first user micro-interaction
+            const unlockAudio = () => {
+              if (globalAudioRef.current) {
+                globalAudioRef.current.play().catch(() => {});
+              }
+              ['pointerdown', 'click', 'keydown', 'scroll', 'touchstart', 'mousemove'].forEach(evt => {
+                window.removeEventListener(evt, unlockAudio);
+                document.removeEventListener(evt, unlockAudio);
+              });
+            };
+            ['pointerdown', 'click', 'keydown', 'scroll', 'touchstart', 'mousemove'].forEach(evt => {
+              window.addEventListener(evt, unlockAudio, { once: true, passive: true });
+              document.addEventListener(evt, unlockAudio, { once: true, passive: true });
+            });
+          });
+        }
+      };
+
+      attemptPlay();
+    } else {
+      audio.pause();
+    }
+  }, [isMusicPlaying, currentMusicTrack?.url]);
+
+  // Drag and Drop anywhere on the window
+  const handleWindowDragOver = (e) => {
+    e.preventDefault();
+    setIsWindowDragActive(true);
+  };
+
+  const handleWindowDragLeave = (e) => {
+    if (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+      setIsWindowDragActive(false);
+    }
+  };
+
+  const handleWindowDrop = (e) => {
+    e.preventDefault();
+    setIsWindowDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      uploadFiles(e.dataTransfer.files);
+    }
+  };
+
+  const renderMainContent = () => {
+    // Show spinner while Supabase restores session from localStorage
+    if (authLoading) {
+      return (
+        <div style={{
+          minHeight: '100vh', width: '100vw',
+          background: 'radial-gradient(circle at 50% 20%, #1e1b4b 0%, #030712 100%)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0
+        }}>
+          <Loader2 size={48} color="#6366f1" style={{ animation: 'spin 1s linear infinite' }} />
+        </div>
+      );
+    }
+
+    // If no user is logged in, show the ultra-premium AuthLandingPage!
+    if (!user) {
+      return <AuthLandingPage />;
+    }
+
+    return (
+      <div
+        className="app-container"
+        onDragOver={handleWindowDragOver}
+        onDragLeave={handleWindowDragLeave}
+        onDrop={handleWindowDrop}
+      >
+        {/* Master PIN Passcode Lock Screen Modal */}
+        <VaultPasscodeModal />
+
+        {/* Interactive Floating Particle Canvas */}
+        <ParticleCanvas />
+
+
+      {/* Full Window Drop Overlay */}
+      {isWindowDragActive && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(99, 102, 241, 0.28)',
+          backdropFilter: 'blur(16px)',
+          zIndex: 9999,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          border: '4px dashed var(--accent-primary)',
+          animation: 'fadeIn 0.2s ease-out'
+        }}>
+          <UploadCloud size={72} color="var(--accent-primary)" className="pulse" />
+          <h2 style={{ fontSize: '2rem', fontWeight: '800', marginTop: '16px', color: '#ffffff' }}>
+            Drop files anywhere to upload instantly
+          </h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '1.05rem', marginTop: '6px' }}>
+            Your files will be saved directly into your local IndexedDB vault
+          </p>
+        </div>
+      )}
+
+      {/* Left Sidebar */}
+      <Sidebar
+        isOpen={isMobileSidebarOpen}
+        isCollapsed={isSidebarCollapsed}
+        onToggleCollapse={() => setIsSidebarCollapsed(prev => !prev)}
+        onCloseMobile={() => setIsMobileSidebarOpen(false)}
+      />
+
+      {/* Mobile Backdrop */}
+      {isMobileSidebarOpen && (
+        <div
+          onClick={() => setIsMobileSidebarOpen(false)}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.6)',
+            zIndex: 400
+          }}
+        />
+      )}
+
+      {/* Main Content Workspace */}
+      <div style={{
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        overflow: 'hidden',
+        position: 'relative',
+        zIndex: 1
+      }}>
+        {/* Navbar */}
+        <Navbar
+          onToggleMobileSidebar={() => {
+            if (window.innerWidth <= 768) {
+              setIsMobileSidebarOpen(prev => !prev);
+            } else {
+              setIsSidebarCollapsed(prev => !prev);
+            }
+          }}
+          onOpenAiCopilot={() => setIsAiCopilotOpen(true)}
+          onOpenMusicStudio={() => setIsMusicStudioOpen(true)}
+          onOpenSubscription={() => setIsSubscriptionOpen(true)}
+        />
+
+        {/* Scrollable Main Area */}
+        <main style={{
+          flex: 1,
+          padding: '24px',
+          overflowY: 'auto',
+          position: 'relative'
+        }}>
+          {activeCategory === 'converter' ? (
+            <ConverterStudioPage />
+          ) : activeCategory === 'profile' ? (
+            <ProfilePage />
+          ) : (
+            <>
+              <VaultHeroBanner />
+              <Breadcrumbs />
+              {viewMode === 'grid' ? <FileGrid /> : <FileList />}
+            </>
+          )}
+        </main>
+
+        {/* Mobile Floating Bottom Dock for Smartphone Thumbs */}
+        <div className="mobile-bottom-dock">
+          <button
+            className={`mobile-dock-item ${activeCategory === 'all' ? 'active' : ''}`}
+            onClick={() => setActiveCategory('all')}
+          >
+            <Folder size={20} />
+            <span>Vault</span>
+          </button>
+
+          <button
+            className={`mobile-dock-item ${activeCategory === 'edited' ? 'active' : ''}`}
+            onClick={() => setActiveCategory('edited')}
+          >
+            <Sliders size={20} color="var(--accent-amber)" />
+            <span>Edited</span>
+          </button>
+
+          <button
+            className="mobile-dock-item"
+            onClick={() => setIsUploadOpen(true)}
+            style={{ color: 'var(--accent-primary)' }}
+          >
+            <div style={{
+              width: '38px', height: '38px', borderRadius: '50%',
+              background: 'var(--accent-gradient)', display: 'flex',
+              alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 15px var(--accent-glow)'
+            }}>
+              <UploadCloud size={20} color="#ffffff" />
+            </div>
+          </button>
+
+          <button
+            className={`mobile-dock-item ${activeCategory === 'converter' ? 'active' : ''}`}
+            onClick={() => setActiveCategory('converter')}
+          >
+            <Command size={20} color="var(--accent-cyan)" />
+            <span>Convert</span>
+          </button>
+
+          <button
+            className={`mobile-dock-item ${activeCategory === 'profile' ? 'active' : ''}`}
+            onClick={() => setActiveCategory('profile')}
+          >
+            <User size={20} />
+            <span>Profile</span>
+          </button>
+        </div>
+
+        {/* Raycast Style Keyboard Shortcut Helper Pill */}
+        <div style={{
+          position: 'absolute',
+          bottom: '16px',
+          right: '24px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px',
+          background: 'rgba(15, 23, 42, 0.85)',
+          backdropFilter: 'blur(10px)',
+          padding: '4px 12px',
+          borderRadius: 'var(--radius-full)',
+          border: '1px solid var(--border-subtle)',
+          fontSize: '0.72rem',
+          color: 'var(--text-muted)',
+          zIndex: 50
+        }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <Command size={10} /> <strong>Ctrl+K</strong> Commands
+          </span>
+          <span>•</span>
+          <span><strong>Single-Click</strong> Open</span>
+          <span>•</span>
+          <span><strong>DB</strong> Local Engine</span>
+        </div>
+      </div>
+
+      {/* Ultra-Premium Floating Modules & Modals */}
+      <CommandPalette />
+      <ActivityLogDrawer />
+      <MediaPlayerBar />
+      <BatchActionBar />
+      <AiCopilotDrawer isOpen={isAiCopilotOpen} onClose={() => setIsAiCopilotOpen(false)} />
+
+      {/* Core Modals */}
+      <UploadModal />
+      <NewFolderModal />
+      <FilePreviewModal />
+      <StorageAnalyticsModal />
+      <ShareModal />
+      <AuthModal />
+      <SubscriptionModal isOpen={isSubscriptionOpen} onClose={() => setIsSubscriptionOpen(false)} />
+      <MusicStudioModal isOpen={isMusicStudioOpen} onClose={() => setIsMusicStudioOpen(false)} />
+      <MoveToFolderModal isOpen={Boolean(moveModalTarget)} onClose={() => setMoveModalTarget(null)} targetItemIds={moveModalTarget} />
+      <WindowsDriveModal />
+      <ToastContainer />
+      <UploadProgressBar />
+    </div>
+    );
+  };
+
+  return (
+    <>
+      {/* Permanent Global Background Music Engine — Never Unmounts on Route / Auth State */}
+      <audio
+        ref={globalAudioRef}
+        src={currentMusicTrack?.url}
+        muted={isMusicMuted}
+        loop={isMusicLooping}
+        onTimeUpdate={(e) => {
+          if (e.target.currentTime > 0) {
+            try {
+              sessionStorage.setItem('storagebank_music_time', e.target.currentTime.toString());
+            } catch {}
+          }
+        }}
+        onEnded={() => { if (!isMusicLooping) setIsMusicPlaying(false); }}
+      />
+      {renderMainContent()}
+    </>
+  );
+}
+
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <StorageProvider>
+        <AppContent />
+      </StorageProvider>
+    </AuthProvider>
+  );
+}
