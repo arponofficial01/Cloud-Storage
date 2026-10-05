@@ -1,16 +1,15 @@
 import { createClient } from '@supabase/supabase-js';
 
-const rawUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const rawKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const rawUrl = import.meta.env.VITE_SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const rawKey = import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '';
 
 // Detect if a legitimate custom Supabase project is configured
-// (The default URL 'hbecbsxdagfcmlrruoxc.supabase.co' is unresolvable/offline)
 export const isLiveSupabase = Boolean(
   rawUrl &&
   !rawUrl.includes('hbecbsxdagfcmlrruoxc') &&
   !rawUrl.includes('example.supabase.co') &&
   rawKey &&
-  rawKey.startsWith('ey')
+  (rawKey.startsWith('ey') || rawKey.startsWith('sb_publishable_') || rawKey.length > 20)
 );
 
 // If live credentials are provided, use official Supabase client.
