@@ -1,989 +1,1312 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useStorage } from '../context/StorageContext';
 import {
-  X, Sliders, RotateCw, Download, HardDrive, Copy,
-  FlipHorizontal, FlipVertical, Type, Volume2, VolumeX,
-  Play, Pause, Crop, Scissors, SkipBack, SkipForward, Replace,
-  Check, RefreshCw, ZoomIn, ZoomOut, Loader2, Sparkles
+  X,
+  RotateCw,
+  Download,
+  FlipHorizontal,
+  FlipVertical,
+  Save,
+  Sliders,
+  Crop,
+  RotateCcw,
+  Check,
+  Scissors,
+  Camera,
+  Play,
+  Pause,
+  Volume2,
+  VolumeX,
+  Gauge,
+  Loader2,
+  Film
 } from 'lucide-react';
 
-const FILTERS = [
-  { key: 'normal',    label: 'Normal',     b:100,c:100,s:100,h:0,  sep:0, blur:0,gray:0,inv:0 },
-  { key: 'clarendon',label: 'Clarendon',   b:110,c:130,s:145,h:0,  sep:0, blur:0,gray:0,inv:0 },
-  { key: 'gingham',  label: 'Gingham',     b:105,c:90, s:85, h:350,sep:12,blur:0,gray:0,inv:0 },
-  { key: 'moon',     label: 'Moon',        b:110,c:110,s:0,  h:0,  sep:0, blur:0,gray:100,inv:0},
-  { key: 'lark',     label: 'Lark',        b:115,c:85, s:115,h:10, sep:0, blur:0,gray:0,inv:0 },
-  { key: 'reyes',    label: 'Reyes',       b:115,c:85, s:75, h:0,  sep:22,blur:0,gray:0,inv:0 },
-  { key: 'juno',     label: 'Juno',        b:105,c:120,s:130,h:0,  sep:0, blur:0,gray:0,inv:0 },
-  { key: 'slumber',  label: 'Slumber',     b:105,c:95, s:65, h:0,  sep:28,blur:0,gray:0,inv:0 },
-  { key: 'crema',    label: 'Crema',       b:108,c:92, s:80, h:8,  sep:18,blur:0,gray:0,inv:0 },
-  { key: 'ludwig',   label: 'Ludwig',      b:112,c:100,s:95, h:0,  sep:8, blur:0,gray:0,inv:0 },
-  { key: 'aden',     label: 'Aden',        b:112,c:85, s:90, h:355,sep:20,blur:0,gray:0,inv:0 },
-  { key: 'perpetua', label: 'Perpetua',    b:103,c:100,s:110,h:0,  sep:0, blur:0,gray:0,inv:0 },
-  { key: 'amaro',    label: 'Amaro',       b:110,c:90, s:115,h:350,sep:0, blur:0,gray:0,inv:0 },
-  { key: 'mayfair',  label: 'Mayfair',     b:108,c:105,s:110,h:0,  sep:12,blur:0,gray:0,inv:0 },
-  { key: 'rise',     label: 'Rise',        b:115,c:88, s:90, h:15, sep:15,blur:0,gray:0,inv:0 },
-  { key: 'hudson',   label: 'Hudson',      b:112,c:115,s:90, h:200,sep:0, blur:0,gray:0,inv:0 },
-  { key: 'valencia', label: 'Valencia',    b:108,c:108,s:110,h:30, sep:8, blur:0,gray:0,inv:0 },
-  { key: 'xpro2',    label: 'X-Pro II',    b:108,c:130,s:120,h:0,  sep:0, blur:0,gray:0,inv:0 },
-  { key: 'sierra',   label: 'Sierra',      b:108,c:88, s:85, h:0,  sep:18,blur:0,gray:0,inv:0 },
-  { key: 'willow',   label: 'Willow',      b:108,c:105,s:0,  h:0,  sep:30,blur:0,gray:80,inv:0},
-  { key: 'lofi',     label: 'Lo-Fi',       b:100,c:150,s:200,h:0,  sep:0, blur:0,gray:0,inv:0 },
-  { key: 'inkwell',  label: 'Inkwell',     b:100,c:120,s:0,  h:0,  sep:0, blur:0,gray:100,inv:0},
+const FILTER_PRESETS = [
+  { name: 'Original', brightness: 100, contrast: 100, saturate: 100, grayscale: 0, sepia: 0 },
+  { name: 'Cinema Matte', brightness: 98, contrast: 118, saturate: 88, grayscale: 0, sepia: 10 },
+  { name: 'Vivid HDR', brightness: 105, contrast: 115, saturate: 135, grayscale: 0, sepia: 0 },
+  { name: 'Noir B&W', brightness: 102, contrast: 125, saturate: 0, grayscale: 100, sepia: 0 },
+  { name: 'Warm Vintage', brightness: 104, contrast: 95, saturate: 90, grayscale: 0, sepia: 40 }
 ];
 
-function fmtTime(sec) {
-  if (!isFinite(sec) || sec < 0) return '0:00';
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
 export function MediaEditorModal({ file, isOpen, onClose }) {
-  const { saveFile, replaceFile, reloadVault, addToast, logActivity, setActivePreview, setActiveCategory } = useStorage();
+  const { saveFile, replaceFile, reloadVault, addToast, logActivity, ensureFileBlob } = useStorage();
 
-  // Filter State
+  const isVideo =
+    file?.category === 'video' ||
+    file?.type?.startsWith('video/') ||
+    ['mp4', 'webm', 'mov', 'mkv', 'avi', 'm4v'].includes((file?.name?.split('.').pop() || '').toLowerCase());
+  const isImage = !isVideo;
+
+  const [activeTab, setActiveTab] = useState(isVideo ? 'trim' : 'adjust'); // 'trim' | 'adjust' | 'transform' | 'crop'
+
+  // Shared Visual Filters (Image & Video)
   const [brightness, setBrightness] = useState(100);
   const [contrast, setContrast] = useState(100);
   const [saturate, setSaturate] = useState(100);
-  const [hueRotate, setHueRotate] = useState(0);
   const [blur, setBlur] = useState(0);
+  const [grayscale, setGrayscale] = useState(0);
   const [sepia, setSepia] = useState(0);
   const [invert, setInvert] = useState(0);
-  const [grayscale, setGrayscale] = useState(0);
 
-  // Transform State
+  // Shared Transformations
   const [rotation, setRotation] = useState(0);
   const [flipH, setFlipH] = useState(false);
   const [flipV, setFlipV] = useState(false);
-  const [watermarkText, setWatermarkText] = useState('');
 
-  // Crop State
-  const [cropRect, setCropRect] = useState(null);
-  const [cropApplied, setCropApplied] = useState(false);
-  const [cropAspect, setCropAspect] = useState('free');
-  const [dragging, setDragging] = useState(false);
-  const [dragStart, setDragStart] = useState(null);
+  // Interactive Drag & Drop Crop State (stored in normalized percentages 0..100 of the canvas)
+  const [cropAspect, setCropAspect] = useState('free'); // 'free' | '1:1' | '16:9' | '4:3'
+  const [cropBox, setCropBox] = useState({ x: 10, y: 10, w: 80, h: 80 });
+  // committedCrop stores the applied crop in source image pixel coordinates { sx, sy, sw, sh } or null
+  const [committedCrop, setCommittedCrop] = useState(null);
+  const [cropDragAction, setCropDragAction] = useState(null); // { mode: 'move'|'nw'|'ne'|'sw'|'se'|'n'|'s'|'e'|'w'|'draw', startX, startY, startBox }
 
-  // Video State
+  // Video Editing State
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [_currentTime, setCurrentTime] = useState(0);
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
-  const [videoDuration, setVideoDuration] = useState(0);
-  const [videoCurrentTime, setVideoCurrentTime] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [videoMuted, setVideoMuted] = useState(false);
-  const [videoSpeed, setVideoSpeed] = useState(1.0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [renderProgress, setRenderProgress] = useState(0);
 
-  // UI & Active Tabs
-  const [activeTab, setActiveTab] = useState('filters');
-  const [activeFilter, setActiveFilter] = useState('normal');
-  const [mediaUrl, setMediaUrl] = useState(null);
+  // Save State
+  const [saveMode, setSaveMode] = useState('replace'); // 'replace' | 'new'
   const [saving, setSaving] = useState(false);
-  const [saveMode, setSaveMode] = useState('new');
+  const [mediaUrl, setMediaUrl] = useState(null);
 
   const canvasRef = useRef(null);
-  const videoRef = useRef(null);
-  const videoStageRef = useRef(null);
+  const canvasWrapRef = useRef(null);
   const imageObjRef = useRef(null);
-  const timelineRef = useRef(null);
-  const isDraggingTrimRef = useRef(null);
-
-  const isImage = file?.category === 'image' || file?.type?.startsWith('image/');
-  const isVideo = file?.category === 'video' || file?.type?.startsWith('video/');
+  const videoRef = useRef(null);
 
   useEffect(() => {
-    if (!file || !isOpen) return;
+    let cancelled = false;
     let url = null;
-    try {
-      let b = file.blob;
-      if (!(b instanceof Blob) && b) {
-        b = new Blob([b], { type: file.type || 'application/octet-stream' });
+    if (!file || !isOpen) return;
+
+    const loadBlob = async () => {
+      try {
+        let b = file.blob;
+        if (!(b instanceof Blob) && typeof ensureFileBlob === 'function') {
+          b = await ensureFileBlob(file);
+        }
+        if (cancelled) return;
+        if (b instanceof Blob) {
+          url = URL.createObjectURL(b);
+          setMediaUrl(url);
+        }
+      } catch (err) {
+        console.warn('Failed to create Media Blob URL:', err);
       }
-      if (b instanceof Blob) {
-        url = URL.createObjectURL(b);
-        setMediaUrl(url);
-      }
-    } catch (err) {
-      console.warn('Failed to create Blob URL:', err);
-    }
+    };
+
+    loadBlob();
+
     return () => {
+      cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [file, isOpen]);
+  }, [file, isOpen, ensureFileBlob]);
 
-  // Clean reset on modal open
   useEffect(() => {
     if (isOpen) {
-      setBrightness(100); setContrast(100); setSaturate(100); setHueRotate(0);
-      setBlur(0); setSepia(0); setInvert(0); setGrayscale(0); setActiveFilter('normal');
-      setRotation(0); setFlipH(false); setFlipV(false); setWatermarkText('');
-      setCropRect(null); setCropApplied(false); setCropAspect('free');
-      setTrimStart(0); setTrimEnd(0); setIsPlaying(false); setVideoSpeed(1.0);
-      setActiveTab('filters'); setSaveMode('new'); setDragging(false);
+      setBrightness(100);
+      setContrast(100);
+      setSaturate(100);
+      setBlur(0);
+      setGrayscale(0);
+      setSepia(0);
+      setInvert(0);
+      setRotation(0);
+      setFlipH(false);
+      setFlipV(false);
+      setCropAspect('free');
+      setCropBox({ x: 10, y: 10, w: 80, h: 80 });
+      setCommittedCrop(null);
+      setCropDragAction(null);
+      setActiveTab(isVideo ? 'trim' : 'adjust');
+      setSaveMode(isVideo ? 'new' : 'replace');
+      setPlaybackSpeed(1);
+      setVideoMuted(false);
+      setRenderProgress(0);
     }
-  }, [isOpen]);
+  }, [isOpen, isVideo]);
 
-  // Reset crop rect when tab changes
-  useEffect(() => {
-    if (activeTab !== 'crop') {
-      setCropRect(null);
-      setDragging(false);
+  const resetAllAdjustments = () => {
+    setBrightness(100);
+    setContrast(100);
+    setSaturate(100);
+    setBlur(0);
+    setGrayscale(0);
+    setSepia(0);
+    setInvert(0);
+    setRotation(0);
+    setFlipH(false);
+    setFlipV(false);
+    setCropAspect('free');
+    setCropBox({ x: 10, y: 10, w: 80, h: 80 });
+    setCommittedCrop(null);
+    setPlaybackSpeed(1);
+    setVideoMuted(false);
+    if (videoDuration > 0) {
+      setTrimStart(0);
+      setTrimEnd(videoDuration);
     }
-  }, [activeTab]);
-
-  const getFilterCSS = useCallback(() =>
-    `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturate}%) hue-rotate(${hueRotate}deg) blur(${blur}px) sepia(${sepia}%) invert(${invert}%) grayscale(${grayscale}%)`
-  , [brightness, contrast, saturate, hueRotate, blur, sepia, invert, grayscale]);
-
-  const applyPreset = (p) => {
-    setActiveFilter(p.key);
-    setBrightness(p.b); setContrast(p.c); setSaturate(p.s); setHueRotate(p.h);
-    setSepia(p.sep); setInvert(p.inv); setGrayscale(p.gray); setBlur(p.blur);
+    addToast('Reset all adjustments to default', 'info');
   };
 
-  // ── Glitch-Free Image Canvas Rendering ─────────────────────────────────────
+  const applyPreset = (p) => {
+    setBrightness(p.brightness);
+    setContrast(p.contrast);
+    setSaturate(p.saturate);
+    setGrayscale(p.grayscale);
+    setSepia(p.sepia);
+  };
+
+  const getFilterCSS = useCallback(() => {
+    return `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturate}%) blur(${blur}px) grayscale(${grayscale}%) sepia(${sepia}%) invert(${invert}%)`;
+  }, [brightness, contrast, saturate, blur, grayscale, sepia, invert]);
+
+  // ── IMAGE CANVAS RENDERING ────────────────────────────────────────────────
   const renderCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     const img = imageObjRef.current;
     if (!canvas || !img) return;
     const ctx = canvas.getContext('2d');
 
-    let sx = 0, sy = 0, sw = img.width, sh = img.height;
+    const sx = committedCrop ? committedCrop.sx : 0;
+    const sy = committedCrop ? committedCrop.sy : 0;
+    const sw = committedCrop ? committedCrop.sw : img.width;
+    const sh = committedCrop ? committedCrop.sh : img.height;
 
-    if (cropApplied && cropRect) {
-      const displayW = canvas.clientWidth || canvas.offsetWidth || img.width;
-      const displayH = canvas.clientHeight || canvas.offsetHeight || img.height;
-      const scaleX = img.width / Math.max(1, displayW);
-      const scaleY = img.height / Math.max(1, displayH);
-
-      sx = Math.max(0, Math.round(cropRect.x * scaleX));
-      sy = Math.max(0, Math.round(cropRect.y * scaleY));
-      sw = Math.min(img.width - sx, Math.max(1, Math.round(cropRect.w * scaleX)));
-      sh = Math.min(img.height - sy, Math.max(1, Math.round(cropRect.h * scaleY)));
-    } else if (cropAspect !== 'free') {
-      const ratios = { '1:1': [1, 1], '16:9': [16, 9], '4:3': [4, 3], '9:16': [9, 16], '21:9': [21, 9] };
-      const [rw, rh] = ratios[cropAspect] || [1, 1];
-      const srcAsp = img.width / img.height;
-      const tgtAsp = rw / rh;
-      if (srcAsp > tgtAsp) {
-        sh = img.height;
-        sw = Math.round(img.height * tgtAsp);
-        sx = Math.round((img.width - sw) / 2);
-      } else {
-        sw = img.width;
-        sh = Math.round(img.width / tgtAsp);
-        sy = Math.round((img.height - sh) / 2);
-      }
-    }
-
-    const outW = rotation === 90 || rotation === 270 ? sh : sw;
-    const outH = rotation === 90 || rotation === 270 ? sw : sh;
+    const isQuarterTurn = (rotation / 90) % 2 !== 0;
+    const outW = isQuarterTurn ? sh : sw;
+    const outH = isQuarterTurn ? sw : sh;
 
     canvas.width = Math.max(1, outW);
     canvas.height = Math.max(1, outH);
 
-    ctx.clearRect(0, 0, outW, outH);
     ctx.save();
-    ctx.translate(outW / 2, outH / 2);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.filter = getFilterCSS();
+
+    ctx.translate(canvas.width / 2, canvas.height / 2);
     ctx.rotate((rotation * Math.PI) / 180);
     ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
-    ctx.filter = getFilterCSS();
+
     ctx.drawImage(img, sx, sy, sw, sh, -sw / 2, -sh / 2, sw, sh);
     ctx.restore();
+  }, [committedCrop, rotation, flipH, flipV, getFilterCSS]);
 
-    if (watermarkText.trim()) {
-      ctx.save();
-      ctx.font = `bold ${Math.max(16, Math.round(outW / 25))}px sans-serif`;
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
-      ctx.shadowColor = 'rgba(0,0,0,0.8)';
-      ctx.shadowBlur = 6;
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText(watermarkText, outW - 20, outH - 20);
-      ctx.restore();
-    }
-  }, [cropAspect, cropApplied, cropRect, rotation, flipH, flipV, watermarkText, getFilterCSS]);
-
-  // Load Image Object & Render
   useEffect(() => {
     if (!isImage || !mediaUrl || !isOpen) return;
     let isMounted = true;
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.src = mediaUrl;
-
     img.onload = () => {
       if (!isMounted) return;
       imageObjRef.current = img;
       renderCanvas();
-      setTimeout(renderCanvas, 40);
     };
-
-    return () => { isMounted = false; };
+    return () => {
+      isMounted = false;
+    };
   }, [mediaUrl, isImage, isOpen, renderCanvas]);
 
   useEffect(() => {
     if (isImage && imageObjRef.current && isOpen) {
       renderCanvas();
     }
-  }, [brightness, contrast, saturate, hueRotate, blur, sepia, invert, grayscale,
-      rotation, flipH, flipV, cropAspect, cropApplied, cropRect, watermarkText, renderCanvas, isImage, isOpen]);
+  }, [brightness, contrast, saturate, blur, grayscale, sepia, invert, rotation, flipH, flipV, committedCrop, renderCanvas, isImage, isOpen]);
 
-  // Drag Crop Selection
-  const getStagePos = (e, el) => {
-    const rect = el.getBoundingClientRect();
+  // ── INTERACTIVE DRAG & DROP CROP SYSTEM ───────────────────────────────────
+  const handleSelectAspect = (asp) => {
+    setCropAspect(asp);
+    const canvas = canvasRef.current;
+    if (!canvas || asp === 'free') return;
+
+    const cw = canvas.clientWidth || canvas.width || 1;
+    const ch = canvas.clientHeight || canvas.height || 1;
+    const targetRatio = asp === '1:1' ? 1 : asp === '16:9' ? 16 / 9 : 4 / 3;
+
+    // Fit box of targetRatio centered inside canvas
+    let boxW = 75;
+    let boxH = (boxW * (cw / ch)) / targetRatio;
+    if (boxH > 75) {
+      boxH = 75;
+      boxW = (boxH * targetRatio) / (cw / ch);
+    }
+    setCropBox({
+      x: Math.max(0, (100 - boxW) / 2),
+      y: Math.max(0, (100 - boxH) / 2),
+      w: Math.min(100, boxW),
+      h: Math.min(100, boxH)
+    });
+  };
+
+  const getPointerPct = (e) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { px: 0, py: 0, cw: 1, ch: 1 };
+    const rect = canvas.getBoundingClientRect();
     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
     const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    const px = ((clientX - rect.left) / Math.max(1, rect.width)) * 100;
+    const py = ((clientY - rect.top) / Math.max(1, rect.height)) * 100;
     return {
-      x: Math.max(0, Math.min(clientX - rect.left, rect.width)),
-      y: Math.max(0, Math.min(clientY - rect.top, rect.height))
+      px: Math.max(0, Math.min(100, px)),
+      py: Math.max(0, Math.min(100, py)),
+      cw: Math.max(1, rect.width),
+      ch: Math.max(1, rect.height)
     };
   };
 
-  const onCropDown = (e) => {
-    if (activeTab !== 'crop') return;
+  const startCropInteraction = (e, mode) => {
+    if (!isImage || activeTab !== 'crop') return;
     e.preventDefault();
-    const stageEl = isImage ? canvasRef.current : videoStageRef.current;
-    if (!stageEl) return;
-    const pos = getStagePos(e, stageEl);
-    setDragStart(pos);
-    setCropRect(null);
-    setCropApplied(false);
-    setDragging(true);
-  };
-
-  const onCropMove = (e) => {
-    if (!dragging || !dragStart) return;
-    e.preventDefault();
-    const stageEl = isImage ? canvasRef.current : videoStageRef.current;
-    if (!stageEl) return;
-    const pos = getStagePos(e, stageEl);
-    const rect = {
-      x: Math.min(dragStart.x, pos.x),
-      y: Math.min(dragStart.y, pos.y),
-      w: Math.abs(pos.x - dragStart.x),
-      h: Math.abs(pos.y - dragStart.y)
-    };
-    setCropRect(rect);
-  };
-
-  const onCropUp = () => {
-    if (dragging) {
-      setDragging(false);
-      if (cropRect?.w > 10 && cropRect?.h > 10) {
-        setCropApplied(true);
-        addToast('Crop selection set', 'info');
-      }
-    }
-  };
-
-  // Aspect Ratio Preset Select
-  const handleSelectAspectPreset = (aspectKey) => {
-    setCropAspect(aspectKey);
-    setCropRect(null);
-    setCropApplied(true);
-    addToast(`Aspect ratio set to ${aspectKey}`, 'info');
-  };
-
-  // Video Controls
-  const getTimelinePct = (e) => {
-    const el = timelineRef.current;
-    if (!el) return 0;
-    const rect = el.getBoundingClientRect();
-    return Math.max(0, Math.min(1, ((e.clientX || 0) - rect.left) / rect.width));
-  };
-
-  const handleTimelineDown = (e) => {
-    const pct = getTimelinePct(e);
-    const d2s = Math.abs(pct - trimStart / Math.max(1, videoDuration));
-    const d2e = Math.abs(pct - trimEnd / Math.max(1, videoDuration));
-    isDraggingTrimRef.current = d2s < d2e ? 'start' : 'end';
-  };
-
-  const handleTimelineMove = (e) => {
-    if (!isDraggingTrimRef.current || !videoDuration) return;
-    const sec = getTimelinePct(e) * videoDuration;
-    if (isDraggingTrimRef.current === 'start') {
-      setTrimStart(Math.min(sec, trimEnd - 0.5));
-      if (videoRef.current) videoRef.current.currentTime = sec;
+    e.stopPropagation();
+    const { px, py } = getPointerPct(e);
+    if (mode === 'draw') {
+      const initialBox = { x: px, y: py, w: 1, h: 1 };
+      setCropBox(initialBox);
+      setCropDragAction({ mode: 'draw', startX: px, startY: py, startBox: initialBox });
     } else {
-      setTrimEnd(Math.max(sec, trimStart + 0.5));
+      setCropDragAction({ mode, startX: px, startY: py, startBox: { ...cropBox } });
     }
   };
 
-  const handleTimelineUp = () => { isDraggingTrimRef.current = null; };
+  useEffect(() => {
+    if (!cropDragAction) return;
 
-  const handleScrub = (e) => {
-    const sec = getTimelinePct(e) * videoDuration;
-    if (videoRef.current) videoRef.current.currentTime = sec;
-  };
+    const handleWindowMove = (e) => {
+      const { px, py, cw, ch } = getPointerPct(e);
+      const dx = px - cropDragAction.startX;
+      const dy = py - cropDragAction.startY;
+      const sb = cropDragAction.startBox;
+      const mode = cropDragAction.mode;
 
-  const handleLoadedMetadata = () => {
-    if (videoRef.current) {
-      const d = videoRef.current.duration;
-      setVideoDuration(d);
-      setTrimEnd(d);
-    }
-  };
+      let next = { ...sb };
 
-  const handleVideoTimeUpdate = () => {
-    if (!videoRef.current || !videoDuration) return;
-    const cur = videoRef.current.currentTime;
-    setVideoCurrentTime(cur);
-    if (cur >= trimEnd) {
-      videoRef.current.currentTime = trimStart;
-      if (!isPlaying) videoRef.current.pause();
-    }
-  };
-
-  const togglePlay = () => {
-    if (!videoRef.current) return;
-    if (isPlaying) {
-      videoRef.current.pause();
-      setIsPlaying(false);
-    } else {
-      if (videoRef.current.currentTime < trimStart || videoRef.current.currentTime >= trimEnd)
-        videoRef.current.currentTime = trimStart;
-      videoRef.current.play();
-      setIsPlaying(true);
-    }
-  };
-
-  const skipBy = (s) => {
-    if (videoRef.current)
-      videoRef.current.currentTime = Math.max(trimStart, Math.min(trimEnd, videoRef.current.currentTime + s));
-  };
-
-  // ── REAL VIDEO RE-ENCODING & TRIMMING ENGINE (HTML5 Canvas + MediaRecorder) ──
-  const getEditedBlob = async () => {
-    if (isImage && canvasRef.current) {
-      try {
-        const exportedBlob = await new Promise((res) => {
-          const timer = setTimeout(() => res(null), 2500);
-          canvasRef.current.toBlob(b => {
-            clearTimeout(timer);
-            res(b);
-          }, file.type || 'image/png', 0.95);
-        });
-        if (exportedBlob) return exportedBlob;
-      } catch (e) {
-        console.warn('Canvas export fallback:', e);
-      }
-    }
-
-    if (isVideo && file?.blob) {
-      const filterCSS = getFilterCSS();
-      const hasTrim = trimStart > 0.1 || (videoDuration > 0 && trimEnd < (videoDuration - 0.2));
-      const hasFilter = activeFilter !== 'normal' || brightness !== 100 || contrast !== 100 || saturate !== 100 || hueRotate !== 0 || sepia !== 0 || invert !== 0 || grayscale !== 0 || blur !== 0;
-      const hasTransforms = rotation !== 0 || flipH || flipV;
-
-      // When user applied trimming or color grading, perform real frame-by-frame video rendering!
-      if ((hasTrim || hasFilter || hasTransforms) && window.MediaRecorder && mediaUrl) {
-        try {
-          addToast('🎬 Rendering and baking real video frames...', 'info');
-          const renderedVideoBlob = await new Promise((resolve) => {
-            const v = document.createElement('video');
-            v.src = mediaUrl;
-            v.muted = true;
-            v.crossOrigin = 'anonymous';
-
-            const safetyTimeout = setTimeout(() => resolve(null), 12000);
-
-            v.onloadedmetadata = () => {
-              const c = document.createElement('canvas');
-              const w = v.videoWidth || 640;
-              const h = v.videoHeight || 360;
-              c.width = w;
-              c.height = h;
-              const ctx = c.getContext('2d');
-
-              const stream = c.captureStream(30);
-              let mime = 'video/webm;codecs=vp9';
-              if (!MediaRecorder.isTypeSupported(mime)) {
-                mime = MediaRecorder.isTypeSupported('video/webm') ? 'video/webm' : 'video/mp4';
-              }
-
-              let recorder;
-              try {
-                recorder = new MediaRecorder(stream, { mimeType: mime });
-              } catch {
-                recorder = new MediaRecorder(stream);
-              }
-
-              const chunks = [];
-              recorder.ondataavailable = (e) => {
-                if (e.data && e.data.size > 0) chunks.push(e.data);
-              };
-
-              recorder.onstop = () => {
-                clearTimeout(safetyTimeout);
-                const outBlob = new Blob(chunks, { type: mime || 'video/webm' });
-                resolve(outBlob);
-              };
-
-              const effectiveStart = Math.max(0, trimStart);
-              const effectiveEnd = (trimEnd > effectiveStart && trimEnd <= v.duration) ? trimEnd : v.duration;
-              v.currentTime = effectiveStart;
-
-              v.onseeked = () => {
-                recorder.start(100);
-                v.playbackRate = videoSpeed || 1.0;
-                v.play().catch(() => {});
-
-                const renderLoop = () => {
-                  if (v.currentTime >= effectiveEnd || v.paused || v.ended) {
-                    if (recorder.state === 'recording') recorder.stop();
-                    v.pause();
-                    return;
-                  }
-                  ctx.save();
-                  ctx.filter = filterCSS || 'none';
-                  if (rotation !== 0 || flipH || flipV) {
-                    ctx.translate(w / 2, h / 2);
-                    if (rotation) ctx.rotate((rotation * Math.PI) / 180);
-                    ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
-                    ctx.drawImage(v, -w / 2, -h / 2, w, h);
-                  } else {
-                    ctx.drawImage(v, 0, 0, w, h);
-                  }
-                  ctx.restore();
-                  requestAnimationFrame(renderLoop);
-                };
-                renderLoop();
-              };
-            };
-
-            v.onerror = () => {
-              clearTimeout(safetyTimeout);
-              resolve(null);
-            };
-          });
-
-          if (renderedVideoBlob && renderedVideoBlob.size > 1024) {
-            return renderedVideoBlob;
-          }
-        } catch (err) {
-          console.warn('Real video processing fallback:', err);
+      if (mode === 'move') {
+        next.x = Math.max(0, Math.min(100 - sb.w, sb.x + dx));
+        next.y = Math.max(0, Math.min(100 - sb.h, sb.y + dy));
+      } else if (mode === 'draw') {
+        const x1 = Math.min(cropDragAction.startX, px);
+        const y1 = Math.min(cropDragAction.startY, py);
+        const x2 = Math.max(cropDragAction.startX, px);
+        const y2 = Math.max(cropDragAction.startY, py);
+        next = {
+          x: x1,
+          y: y1,
+          w: Math.max(5, x2 - x1),
+          h: Math.max(5, y2 - y1)
+        };
+      } else {
+        if (mode.includes('e')) next.w = Math.max(8, Math.min(100 - sb.x, sb.w + dx));
+        if (mode.includes('s')) next.h = Math.max(8, Math.min(100 - sb.y, sb.h + dy));
+        if (mode.includes('w')) {
+          const maxShift = sb.w - 8;
+          const shift = Math.max(-sb.x, Math.min(maxShift, dx));
+          next.x = sb.x + shift;
+          next.w = sb.w - shift;
+        }
+        if (mode.includes('n')) {
+          const maxShift = sb.h - 8;
+          const shift = Math.max(-sb.y, Math.min(maxShift, dy));
+          next.y = sb.y + shift;
+          next.h = sb.h - shift;
         }
       }
 
-      return file.blob;
-    }
+      // Enforce aspect ratio if selected
+      if (cropAspect !== 'free' && mode !== 'move') {
+        const targetRatio = cropAspect === '1:1' ? 1 : cropAspect === '16:9' ? 16 / 9 : 4 / 3;
+        const desiredH = (next.w * (cw / ch)) / targetRatio;
+        if (next.y + desiredH <= 100) {
+          next.h = Math.max(8, desiredH);
+        } else {
+          next.h = 100 - next.y;
+          next.w = Math.max(8, (next.h * targetRatio) / (cw / ch));
+        }
+      }
 
-    return file.blob || new Blob([''], { type: file.type || 'application/octet-stream' });
+      setCropBox(next);
+    };
+
+    const handleWindowUp = () => {
+      setCropDragAction(null);
+    };
+
+    window.addEventListener('mousemove', handleWindowMove);
+    window.addEventListener('mouseup', handleWindowUp);
+    window.addEventListener('touchmove', handleWindowMove, { passive: false });
+    window.addEventListener('touchend', handleWindowUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleWindowMove);
+      window.removeEventListener('mouseup', handleWindowUp);
+      window.removeEventListener('touchmove', handleWindowMove);
+      window.removeEventListener('touchend', handleWindowUp);
+    };
+  }, [cropDragAction, cropAspect]);
+
+  const handleCommitCrop = () => {
+    const img = imageObjRef.current;
+    if (!img) return;
+
+    const baseSx = committedCrop ? committedCrop.sx : 0;
+    const baseSy = committedCrop ? committedCrop.sy : 0;
+    const baseSw = committedCrop ? committedCrop.sw : img.width;
+    const baseSh = committedCrop ? committedCrop.sh : img.height;
+
+    const newSx = Math.round(baseSx + (cropBox.x / 100) * baseSw);
+    const newSy = Math.round(baseSy + (cropBox.y / 100) * baseSh);
+    const newSw = Math.max(16, Math.round((cropBox.w / 100) * baseSw));
+    const newSh = Math.max(16, Math.round((cropBox.h / 100) * baseSh));
+
+    setCommittedCrop({ sx: newSx, sy: newSy, sw: newSw, sh: newSh });
+    setCropBox({ x: 10, y: 10, w: 80, h: 80 });
+    addToast(`Applied crop (${newSw} × ${newSh} px)`, 'success');
   };
 
-  const [customNewName, setCustomNewName] = useState('');
+  // ── VIDEO CONTROLS & FRAME CAPTURE ────────────────────────────────────────
+  const handleVideoLoadedMetadata = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    const dur = Number.isFinite(v.duration) ? v.duration : 0;
+    setVideoDuration(dur);
+    setTrimStart(0);
+    setTrimEnd(dur);
+    setCurrentTime(0);
+  };
+
+  const handleVideoTimeUpdate = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    setCurrentTime(v.currentTime);
+    if (trimEnd > 0 && v.currentTime >= trimEnd) {
+      v.pause();
+      v.currentTime = trimStart;
+      setIsPlaying(false);
+    }
+  };
+
+  const toggleVideoPlay = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) {
+      if (v.currentTime < trimStart || (trimEnd > 0 && v.currentTime >= trimEnd)) {
+        v.currentTime = trimStart;
+      }
+      v.playbackRate = playbackSpeed;
+      v.muted = videoMuted;
+      v.play().then(() => setIsPlaying(true)).catch(() => {});
+    } else {
+      v.pause();
+      setIsPlaying(false);
+    }
+  };
 
   useEffect(() => {
-    if (file?.name) {
-      const base = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
-      const ext = file.name.substring(file.name.lastIndexOf('.')) || '';
-      setCustomNewName(`${base}_edited${ext}`);
+    const v = videoRef.current;
+    if (v && isVideo) {
+      v.playbackRate = playbackSpeed;
+      v.muted = videoMuted;
     }
-  }, [file]);
+  }, [playbackSpeed, videoMuted, isVideo]);
 
-  // Save / Replace Handler
-  const handleSave = async () => {
-    if (!file) return;
+  const formatTime = (sec) => {
+    if (!sec || !Number.isFinite(sec)) return '00:00.0';
+    const m = Math.floor(sec / 60);
+    const s = (sec % 60).toFixed(1);
+    return `${String(m).padStart(2, '0')}:${s.padStart(4, '0')}`;
+  };
 
-    let finalName = customNewName.trim();
-    if (saveMode === 'new' && !finalName) {
-      const base = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
-      const ext = file.name.substring(file.name.lastIndexOf('.')) || '';
-      const promptName = window.prompt('Enter a name for your new edited file:', `${base}_edited${ext}`);
-      if (promptName === null) return; // User cancelled
-      finalName = promptName.trim() || `${base}_edited${ext}`;
+  const handleCaptureVideoFrame = async () => {
+    const v = videoRef.current;
+    if (!v) return;
+    try {
+      const vw = v.videoWidth || 1280;
+      const vh = v.videoHeight || 720;
+      const isQuarterTurn = (rotation / 90) % 2 !== 0;
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width = isQuarterTurn ? vh : vw;
+      offCanvas.height = isQuarterTurn ? vw : vh;
+      const ctx = offCanvas.getContext('2d');
+
+      ctx.save();
+      ctx.filter = getFilterCSS();
+      ctx.translate(offCanvas.width / 2, offCanvas.height / 2);
+      ctx.rotate((rotation * Math.PI) / 180);
+      ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
+      ctx.drawImage(v, -vw / 2, -vh / 2, vw, vh);
+      ctx.restore();
+
+      const frameBlob = await new Promise(res => offCanvas.toBlob(res, 'image/png', 0.95));
+      if (!frameBlob) throw new Error('Could not capture frame');
+
+      const base = file.name.replace(/\.[^.]+$/, '');
+      const frameName = `${base}_frame_${formatTime(v.currentTime).replace(/[:.]/g, '-')}.png`;
+
+      await saveFile({
+        id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+        name: frameName,
+        type: 'image/png',
+        size: frameBlob.size,
+        category: 'image',
+        blob: frameBlob,
+        folderId: file.folderId || null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        tags: ['snapshot', 'image']
+      });
+
+      await reloadVault();
+      addToast(`Saved HD frame "${frameName}" to Vault!`, 'success');
+    } catch (err) {
+      addToast('Frame capture failed: ' + err.message, 'error');
+    }
+  };
+
+  const renderEditedVideoBlob = async () => {
+    const v = videoRef.current;
+    if (!v) throw new Error('Video element not ready');
+
+    v.pause();
+    setIsPlaying(false);
+
+    const vw = v.videoWidth || 1280;
+    const vh = v.videoHeight || 720;
+    const isQuarterTurn = (rotation / 90) % 2 !== 0;
+
+    const recCanvas = document.createElement('canvas');
+    recCanvas.width = isQuarterTurn ? vh : vw;
+    recCanvas.height = isQuarterTurn ? vw : vh;
+    const ctx = recCanvas.getContext('2d');
+
+    const startSec = Math.max(0, trimStart);
+    const endSec = trimEnd > startSec ? trimEnd : (v.duration || 5);
+    const clipDuration = Math.max(0.5, endSec - startSec);
+
+    const stream = recCanvas.captureStream(30);
+
+    if (!videoMuted) {
+      try {
+        const vStream = v.captureStream ? v.captureStream() : v.mozCaptureStream ? v.mozCaptureStream() : null;
+        if (vStream) {
+          const audioTracks = vStream.getAudioTracks();
+          if (audioTracks.length > 0) {
+            stream.addTrack(audioTracks[0]);
+          }
+        }
+      } catch {}
     }
 
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+      ? 'video/webm;codecs=vp9'
+      : MediaRecorder.isTypeSupported('video/webm')
+      ? 'video/webm'
+      : 'video/mp4';
+
+    const chunks = [];
+    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 4500000 });
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+
+    return new Promise((resolve, reject) => {
+      let animId = null;
+
+      recorder.onstop = () => {
+        if (animId) cancelAnimationFrame(animId);
+        setRenderProgress(100);
+        const outBlob = new Blob(chunks, { type: mimeType.split(';')[0] });
+        resolve({ blob: outBlob, mime: mimeType.split(';')[0] });
+      };
+
+      recorder.onerror = (err) => {
+        if (animId) cancelAnimationFrame(animId);
+        reject(err);
+      };
+
+      v.currentTime = startSec;
+      v.playbackRate = playbackSpeed;
+      v.muted = videoMuted;
+
+      const drawLoop = () => {
+        ctx.save();
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, recCanvas.width, recCanvas.height);
+        ctx.filter = getFilterCSS();
+        ctx.translate(recCanvas.width / 2, recCanvas.height / 2);
+        ctx.rotate((rotation * Math.PI) / 180);
+        ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
+        ctx.drawImage(v, -vw / 2, -vh / 2, vw, vh);
+        ctx.restore();
+
+        const elapsed = Math.max(0, v.currentTime - startSec);
+        setRenderProgress(Math.min(99, Math.round((elapsed / clipDuration) * 100)));
+
+        if (v.currentTime >= endSec || v.ended) {
+          v.pause();
+          if (recorder.state === 'recording') recorder.stop();
+          return;
+        }
+        animId = requestAnimationFrame(drawLoop);
+      };
+
+      v.onseeked = () => {
+        v.onseeked = null;
+        recorder.start(100);
+        v.play().then(() => {
+          drawLoop();
+        }).catch(reject);
+      };
+    });
+  };
+
+  const handleDownload = async () => {
+    if (isVideo) {
+      setSaving(true);
+      try {
+        const { blob } = await renderEditedVideoBlob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = file.name.replace(/\.[^.]+$/, '') + '_edited.webm';
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+      } catch (err) {
+        addToast('Video export failed: ' + err.message, 'error');
+      } finally {
+        setSaving(false);
+        setRenderProgress(0);
+      }
+      return;
+    }
+
+    if (!canvasRef.current) return;
+    canvasRef.current.toBlob(blob => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }, file.type || 'image/png', 0.95);
+  };
+
+  const handleSaveToVault = async () => {
     setSaving(true);
     try {
-      const blob = await getEditedBlob();
-      const now = new Date().toISOString();
-
-      if (saveMode === 'replace') {
-        await replaceFile(file.id, blob, {
-          updatedAt: now,
-          size: blob.size,
-          videoEdits: blob.videoEdits || null,
-          tags: [...(file.tags || []), 'edited']
-        });
-        addToast(`"${file.name}" updated in Storage Bank!`, 'success');
-        logActivity('EDIT', `Replaced media "${file.name}"`, 'success');
+      if (isVideo) {
+        const { blob, mime } = await renderEditedVideoBlob();
+        if (saveMode === 'replace') {
+          await replaceFile(file.id, blob, { type: mime, size: blob.size });
+          addToast(`Updated video "${file.name}" in vault`, 'success');
+          if (logActivity) logActivity('EDIT', `Edited video: ${file.name}`);
+        } else {
+          const base = file.name.replace(/\.[^.]+$/, '');
+          const newName = `${base}_edited_${Date.now()}.webm`;
+          await saveFile({
+            id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+            name: newName,
+            type: mime,
+            size: blob.size,
+            category: 'video',
+            blob,
+            folderId: file.folderId || null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            tags: ['edited', 'video']
+          });
+          addToast(`Saved edited video "${newName}" to vault`, 'success');
+          if (logActivity) logActivity('SAVE', `Saved edited video: ${newName}`);
+        }
       } else {
-        const newFile = {
-          id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-          userId: file.userId,
-          folderId: file.folderId || null,
-          name: finalName,
-          type: blob.type || file.type || 'application/octet-stream',
-          category: file.category,
-          size: blob.size,
-          blob,
-          videoEdits: blob.videoEdits || null,
-          starred: false,
-          inTrash: false,
-          createdAt: now,
-          updatedAt: now,
-          tags: ['edited']
-        };
-        await saveFile(newFile);
-        setActivePreview(newFile);
-        setActiveCategory('edited');
-        addToast(`Saved "${finalName}" to Edited Media Vault!`, 'success');
-        logActivity('EDIT', `Saved edited copy "${finalName}"`, 'success');
+        if (!canvasRef.current) return;
+        const blob = await new Promise(res => {
+          canvasRef.current.toBlob(b => res(b), file.type || 'image/png', 0.95);
+        });
+        if (!blob) throw new Error('Could not render canvas to image');
+
+        if (saveMode === 'replace') {
+          await replaceFile(file.id, blob, { size: blob.size });
+          addToast(`Updated "${file.name}" in vault`, 'success');
+          if (logActivity) logActivity('EDIT', `Edited image: ${file.name}`);
+        } else {
+          const dotIndex = file.name.lastIndexOf('.');
+          const base = dotIndex !== -1 ? file.name.substring(0, dotIndex) : file.name;
+          const ext = dotIndex !== -1 ? file.name.substring(dotIndex) : '.png';
+          const newName = `${base}_edited_${Date.now()}${ext}`;
+
+          await saveFile({
+            id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+            name: newName,
+            type: file.type || 'image/png',
+            size: blob.size,
+            category: 'image',
+            blob,
+            folderId: file.folderId || null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            tags: ['edited', 'image']
+          });
+          addToast(`Saved "${newName}" to vault`, 'success');
+          if (logActivity) logActivity('SAVE', `Saved edited image: ${newName}`);
+        }
       }
 
       await reloadVault();
       onClose();
     } catch (err) {
       console.error(err);
-      addToast('Failed to save media edits.', 'error');
+      addToast('Failed to save media: ' + err.message, 'error');
     } finally {
       setSaving(false);
+      setRenderProgress(0);
     }
-  };
-
-  const handleDownload = async () => {
-    const blob = await getEditedBlob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const base = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
-    const ext = file.name.substring(file.name.lastIndexOf('.')) || '';
-    a.download = `${base}_edited${ext}`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   if (!isOpen || !file) return null;
 
-  const tabs = [
-    { key: 'filters', label: 'Filters' },
-    { key: 'adjust', label: 'Adjust' },
-    { key: 'crop', label: 'Crop' },
-    { key: 'transform', label: 'Transform' }
-  ];
-
-  const curPct = videoDuration > 0 ? (videoCurrentTime / videoDuration) * 100 : 0;
-  const startPct = videoDuration > 0 ? (trimStart / videoDuration) * 100 : 0;
-  const endPct = videoDuration > 0 ? (trimEnd / videoDuration) * 100 : 100;
-
-  const getVideoAspectRatioCSS = () => {
-    switch (cropAspect) {
-      case '1:1': return '1 / 1';
-      case '16:9': return '16 / 9';
-      case '4:3': return '4 / 3';
-      case '9:16': return '9 / 16';
-      case '21:9': return '21 / 9';
-      default: return 'auto';
-    }
-  };
+  const activeImgW = committedCrop ? committedCrop.sw : (imageObjRef.current?.width || 0);
+  const activeImgH = committedCrop ? committedCrop.sh : (imageObjRef.current?.height || 0);
+  const previewCropPxW = Math.round((cropBox.w / 100) * activeImgW);
+  const previewCropPxH = Math.round((cropBox.h / 100) * activeImgH);
 
   return (
     <div className="modal-overlay" style={{ zIndex: 3000 }} onClick={onClose}>
       <div
         className="modal-content"
-        onClick={e => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
         style={{
-          maxWidth: '1400px',
-          width: '98vw',
-          height: '96vh',
+          width: '94vw',
+          maxWidth: '1140px',
+          height: '88vh',
           display: 'flex',
           flexDirection: 'column',
-          overflow: 'hidden'
+          padding: 0,
+          borderRadius: '10px',
+          overflow: 'hidden',
+          background: 'var(--bg-modal)',
+          border: '1px solid var(--border-subtle)',
+          boxShadow: '0 24px 60px rgba(0, 0, 0, 0.55)'
         }}
       >
-        {/* Header */}
-        <div className="modal-header" style={{ padding: '12px 20px' }}>
+        {/* Top Header */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '10px 16px',
+          borderBottom: '1px solid var(--border-subtle)',
+          background: 'var(--bg-surface)',
+          flexShrink: 0,
+          flexWrap: 'wrap',
+          gap: '10px'
+        }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <Sliders size={20} color="var(--accent-cyan)" />
-            <h3 style={{ fontSize: '1rem', margin: 0 }}>
-              {isImage ? 'Photo Studio' : 'Video Studio'} — <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>{file.name}</span>
-            </h3>
+            <span style={{
+              fontSize: '0.66rem',
+              fontWeight: 700,
+              padding: '2px 7px',
+              borderRadius: '4px',
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border-subtle)',
+              color: 'var(--accent-primary)',
+              textTransform: 'uppercase'
+            }}>
+              {isVideo ? 'Video Studio' : 'Image Studio'}
+            </span>
+            <span style={{ fontWeight: 600, fontSize: '0.88rem', color: 'var(--text-primary)' }}>
+              {file.name}
+            </span>
           </div>
-          <button className="btn btn-ghost btn-icon" onClick={onClose}><X size={18} /></button>
+
+          {/* Tab Selector */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            background: 'var(--bg-input)',
+            borderRadius: '6px',
+            padding: '2px',
+            border: '1px solid var(--border-subtle)'
+          }}>
+            {isVideo && (
+              <button
+                className="btn btn-ghost"
+                onClick={() => setActiveTab('trim')}
+                style={{
+                  padding: '3px 10px',
+                  fontSize: '0.74rem',
+                  borderRadius: '5px',
+                  background: activeTab === 'trim' ? 'var(--bg-surface)' : 'transparent',
+                  color: activeTab === 'trim' ? 'var(--text-primary)' : 'var(--text-muted)',
+                  gap: '5px'
+                }}
+              >
+                <Scissors size={12} />
+                <span>Trim &amp; Speed</span>
+              </button>
+            )}
+
+            <button
+              className="btn btn-ghost"
+              onClick={() => setActiveTab('adjust')}
+              style={{
+                padding: '3px 10px',
+                fontSize: '0.74rem',
+                borderRadius: '5px',
+                background: activeTab === 'adjust' ? 'var(--bg-surface)' : 'transparent',
+                color: activeTab === 'adjust' ? 'var(--text-primary)' : 'var(--text-muted)',
+                gap: '5px'
+              }}
+            >
+              <Sliders size={12} />
+              <span>Color &amp; Filters</span>
+            </button>
+
+            <button
+              className="btn btn-ghost"
+              onClick={() => setActiveTab('transform')}
+              style={{
+                padding: '3px 10px',
+                fontSize: '0.74rem',
+                borderRadius: '5px',
+                background: activeTab === 'transform' ? 'var(--bg-surface)' : 'transparent',
+                color: activeTab === 'transform' ? 'var(--text-primary)' : 'var(--text-muted)',
+                gap: '5px'
+              }}
+            >
+              <RotateCw size={12} />
+              <span>Transform</span>
+            </button>
+
+            {isImage && (
+              <button
+                className="btn btn-ghost"
+                onClick={() => setActiveTab('crop')}
+                style={{
+                  padding: '3px 10px',
+                  fontSize: '0.74rem',
+                  borderRadius: '5px',
+                  background: activeTab === 'crop' ? 'var(--bg-surface)' : 'transparent',
+                  color: activeTab === 'crop' ? 'var(--text-primary)' : 'var(--text-muted)',
+                  gap: '5px'
+                }}
+              >
+                <Crop size={12} />
+                <span>Crop</span>
+              </button>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            {isVideo && (
+              <button
+                className="btn btn-secondary"
+                onClick={handleCaptureVideoFrame}
+                style={{ padding: '4px 10px', fontSize: '0.74rem', borderRadius: '6px', gap: '5px', color: 'var(--accent-emerald)' }}
+                title="Save current video frame as PNG to Vault"
+              >
+                <Camera size={12} />
+                <span>Snapshot to Vault</span>
+              </button>
+            )}
+
+            <button
+              className="btn btn-secondary"
+              onClick={resetAllAdjustments}
+              style={{ padding: '4px 8px', fontSize: '0.74rem', borderRadius: '6px', gap: '4px' }}
+              title="Reset all adjustments"
+            >
+              <RotateCcw size={12} />
+              <span>Reset</span>
+            </button>
+
+            <button
+              className="btn btn-ghost btn-icon"
+              onClick={onClose}
+              style={{ padding: '4px', height: '28px', width: '28px' }}
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
 
-        {/* Main Grid */}
-        <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 340px', overflow: 'hidden' }}>
+        {/* Studio Workspace */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+          {/* Controls Bar */}
+          <div style={{
+            padding: '10px 16px',
+            borderBottom: '1px solid var(--border-subtle)',
+            background: 'var(--bg-secondary)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '14px',
+            overflowX: 'auto',
+            flexShrink: 0,
+            flexWrap: 'wrap'
+          }}>
+            {activeTab === 'trim' && isVideo && (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={toggleVideoPlay}
+                  style={{ padding: '5px 12px', fontSize: '0.76rem', borderRadius: '6px', gap: '5px' }}
+                >
+                  {isPlaying ? <Pause size={13} /> : <Play size={13} />}
+                  <span>{isPlaying ? 'Pause' : 'Play Clip'}</span>
+                </button>
 
-          {/* ── STAGE VIEWPORT ── */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Start:</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(0.1, videoDuration)}
+                    step={0.1}
+                    value={trimStart}
+                    onChange={(e) => {
+                      const val = Math.min(Number(e.target.value), Math.max(0, trimEnd - 0.2));
+                      setTrimStart(val);
+                      if (videoRef.current) videoRef.current.currentTime = val;
+                    }}
+                    style={{ width: '100px', accentColor: 'var(--accent-primary)' }}
+                  />
+                  <span style={{ color: 'var(--text-primary)', fontFamily: 'monospace' }}>{formatTime(trimStart)}</span>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>End:</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(0.1, videoDuration)}
+                    step={0.1}
+                    value={trimEnd}
+                    onChange={(e) => {
+                      const val = Math.max(Number(e.target.value), trimStart + 0.2);
+                      setTrimEnd(val);
+                      if (videoRef.current) videoRef.current.currentTime = val;
+                    }}
+                    style={{ width: '100px', accentColor: 'var(--accent-primary)' }}
+                  />
+                  <span style={{ color: 'var(--text-primary)', fontFamily: 'monospace' }}>{formatTime(trimEnd)}</span>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem' }}>
+                  <Gauge size={13} color="var(--text-muted)" />
+                  <span style={{ color: 'var(--text-muted)' }}>Speed:</span>
+                  {[0.5, 1, 1.25, 1.5, 2].map(spd => (
+                    <button
+                      key={spd}
+                      type="button"
+                      onClick={() => setPlaybackSpeed(spd)}
+                      style={{
+                        padding: '3px 7px',
+                        borderRadius: '4px',
+                        fontSize: '0.72rem',
+                        fontWeight: 600,
+                        border: '1px solid var(--border-subtle)',
+                        background: playbackSpeed === spd ? 'var(--accent-primary)' : 'var(--bg-input)',
+                        color: playbackSpeed === spd ? '#ffffff' : 'var(--text-secondary)',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {spd}x
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setVideoMuted(m => !m)}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: '0.74rem',
+                    borderRadius: '6px',
+                    gap: '5px',
+                    color: videoMuted ? 'var(--accent-rose)' : 'var(--text-secondary)'
+                  }}
+                >
+                  {videoMuted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+                  <span>{videoMuted ? 'Muted' : 'Audio On'}</span>
+                </button>
+              </>
+            )}
+
+            {activeTab === 'adjust' && (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px', paddingRight: '8px', borderRight: '1px solid var(--border-subtle)' }}>
+                  {FILTER_PRESETS.map(p => (
+                    <button
+                      key={p.name}
+                      type="button"
+                      onClick={() => applyPreset(p)}
+                      style={{
+                        padding: '3px 8px',
+                        borderRadius: '5px',
+                        fontSize: '0.72rem',
+                        border: '1px solid var(--border-subtle)',
+                        background: 'var(--bg-input)',
+                        color: 'var(--text-secondary)',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+                <ControlSlider label="Brightness" value={brightness} min={50} max={150} unit="%" onChange={setBrightness} />
+                <ControlSlider label="Contrast" value={contrast} min={50} max={150} unit="%" onChange={setContrast} />
+                <ControlSlider label="Saturation" value={saturate} min={0} max={200} unit="%" onChange={setSaturate} />
+                <ControlSlider label="Grayscale" value={grayscale} min={0} max={100} unit="%" onChange={setGrayscale} />
+                <ControlSlider label="Sepia" value={sepia} min={0} max={100} unit="%" onChange={setSepia} />
+                <ControlSlider label="Blur" value={blur} min={0} max={10} unit="px" onChange={setBlur} />
+              </>
+            )}
+
+            {activeTab === 'transform' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setRotation(r => (r + 90) % 360)}
+                  style={{ fontSize: '0.76rem', padding: '5px 12px', gap: '6px' }}
+                >
+                  <RotateCw size={13} /> Rotate 90° ({rotation}°)
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setFlipH(v => !v)}
+                  style={{ fontSize: '0.76rem', padding: '5px 12px', gap: '6px', color: flipH ? 'var(--accent-primary)' : 'inherit' }}
+                >
+                  <FlipHorizontal size={13} /> Flip Horizontal
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setFlipV(v => !v)}
+                  style={{ fontSize: '0.76rem', padding: '5px 12px', gap: '6px', color: flipV ? 'var(--accent-primary)' : 'inherit' }}
+                >
+                  <FlipVertical size={13} /> Flip Vertical
+                </button>
+              </div>
+            )}
+
+            {activeTab === 'crop' && isImage && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', width: '100%', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Aspect Ratio:</span>
+                {['free', '1:1', '16:9', '4:3'].map(asp => (
+                  <button
+                    key={asp}
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => handleSelectAspect(asp)}
+                    style={{
+                      fontSize: '0.74rem',
+                      padding: '4px 10px',
+                      borderRadius: '5px',
+                      background: cropAspect === asp ? 'var(--accent-primary)' : 'var(--bg-input)',
+                      color: cropAspect === asp ? '#ffffff' : 'var(--text-secondary)'
+                    }}
+                  >
+                    {asp.toUpperCase()}
+                  </button>
+                ))}
+
+                <span style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginLeft: '6px' }}>
+                  Drag box to move, drag corners/edges to resize ({previewCropPxW} &times; {previewCropPxH} px)
+                </span>
+
+                <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  {committedCrop && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => setCommittedCrop(null)}
+                      style={{ fontSize: '0.74rem', padding: '4px 10px', borderRadius: '5px' }}
+                    >
+                      Undo Crop
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleCommitCrop}
+                    style={{ fontSize: '0.75rem', padding: '5px 12px', borderRadius: '6px', gap: '5px' }}
+                  >
+                    <Check size={13} />
+                    <span>Apply Crop</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Borderless Media Viewing Stage */}
           <div
             style={{
-              background: '#040711',
+              flex: 1,
               display: 'flex',
-              flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
+              padding: isVideo ? '0' : '20px',
+              background: '#090a0f',
               overflow: 'hidden',
-              padding: '20px',
               position: 'relative',
-              height: '100%'
+              userSelect: 'none'
             }}
           >
-            {/* Image Canvas */}
-            {isImage && (
-              <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <div style={{ position: 'relative', display: 'inline-block', maxWidth: '100%', maxHeight: '100%' }}>
-                  <canvas
-                    ref={canvasRef}
-                    style={{
-                      maxWidth: '100%',
-                      maxHeight: '100%',
-                      objectFit: 'contain',
-                      boxShadow: '0 20px 60px rgba(0,0,0,0.9)',
-                      cursor: activeTab === 'crop' ? 'crosshair' : 'default',
-                      userSelect: 'none',
-                      display: 'block'
-                    }}
-                    onMouseDown={onCropDown} onMouseMove={onCropMove} onMouseUp={onCropUp} onMouseLeave={onCropUp}
-                    onTouchStart={onCropDown} onTouchMove={onCropMove} onTouchEnd={onCropUp}
-                  />
-
-                  {/* Crop Box Overlay — ONLY when active Tab is Crop & dragging or crop applied */}
-                  {activeTab === 'crop' && cropRect && (dragging || cropApplied) && (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        left: cropRect.x + 'px', top: cropRect.y + 'px',
-                        width: cropRect.w + 'px', height: cropRect.h + 'px',
-                        border: '2px solid #6366f1', background: 'rgba(99,102,241,0.18)',
-                        boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)', pointerEvents: 'none'
-                      }}
-                    >
-                      {[[-3,-3],['auto',-3],[-3,'auto'],['auto','auto']].map(([t,l],i) => (
-                        <div key={i} style={{
-                          position: 'absolute', width: '10px', height: '10px', background: '#6366f1', borderRadius: '2px',
-                          top: t === -3 ? '-5px' : 'auto', bottom: t === 'auto' ? '-5px' : 'auto',
-                          left: l === -3 ? '-5px' : 'auto', right: l === 'auto' ? '-5px' : 'auto'
-                        }} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Video Stage — Full Height Interactive Video Player */}
-            {isVideo && mediaUrl && (
-              <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', gap: '14px', alignItems: 'center', justifyContent: 'center' }}>
-                <div
-                  ref={videoStageRef}
+            {isVideo ? (
+              mediaUrl ? (
+                <video
+                  ref={videoRef}
+                  src={mediaUrl}
+                  onLoadedMetadata={handleVideoLoadedMetadata}
+                  onTimeUpdate={handleVideoTimeUpdate}
+                  onPlay={() => setIsPlaying(true)}
+                  onPause={() => setIsPlaying(false)}
+                  controls
+                  playsInline
                   style={{
-                    position: 'relative',
                     width: '100%',
-                    flex: 1,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    overflow: 'hidden',
-                    cursor: activeTab === 'crop' ? 'crosshair' : 'default'
+                    height: '100%',
+                    maxWidth: '100%',
+                    maxHeight: '100%',
+                    objectFit: 'contain',
+                    filter: getFilterCSS(),
+                    transform: `rotate(${rotation}deg) scale(${flipH ? -1 : 1}, ${flipV ? -1 : 1})`,
+                    transition: 'transform 0.2s ease',
+                    border: 'none',
+                    outline: 'none',
+                    display: 'block'
                   }}
-                  onMouseDown={onCropDown} onMouseMove={onCropMove} onMouseUp={onCropUp} onMouseLeave={onCropUp}
-                >
+                />
+              ) : (
+                <div style={{ color: 'var(--text-muted)', fontSize: '0.84rem' }}>Loading video stream...</div>
+              )
+            ) : (
+              /* Tightly Wrapped Canvas + Pixel-Aligned Interactive Drag & Drop Crop Overlay */
+              <div
+                ref={canvasWrapRef}
+                onMouseDown={(e) => activeTab === 'crop' && startCropInteraction(e, 'draw')}
+                onTouchStart={(e) => activeTab === 'crop' && startCropInteraction(e, 'draw')}
+                style={{
+                  position: 'relative',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  maxWidth: '100%',
+                  maxHeight: '100%',
+                  cursor: activeTab === 'crop' ? 'crosshair' : 'default'
+                }}
+              >
+                <canvas
+                  ref={canvasRef}
+                  style={{
+                    maxWidth: '100%',
+                    maxHeight: 'calc(88vh - 170px)',
+                    width: 'auto',
+                    height: 'auto',
+                    display: 'block',
+                    borderRadius: '4px',
+                    boxShadow: '0 8px 30px rgba(0, 0, 0, 0.7)'
+                  }}
+                />
+
+                {/* Interactive Drag & Drop Crop Box with 8 Resize Handles & Rule-of-Thirds Grid */}
+                {activeTab === 'crop' && (
                   <div
+                    onMouseDown={(e) => startCropInteraction(e, 'move')}
+                    onTouchStart={(e) => startCropInteraction(e, 'move')}
                     style={{
-                      position: 'relative',
-                      maxWidth: '100%',
-                      maxHeight: '100%',
-                      aspectRatio: getVideoAspectRatioCSS(),
-                      overflow: 'hidden',
-                      borderRadius: '12px',
-                      boxShadow: '0 20px 60px rgba(0,0,0,0.8)',
-                      ...(cropApplied && cropRect && videoStageRef.current ? {
-                        clipPath: `inset(${Math.max(0, (cropRect.y / (videoStageRef.current.clientHeight || 1)) * 100)}% ${Math.max(0, (100 - ((cropRect.x + cropRect.w) / (videoStageRef.current.clientWidth || 1)) * 100))}% ${Math.max(0, (100 - ((cropRect.y + cropRect.h) / (videoStageRef.current.clientHeight || 1)) * 100))}% ${Math.max(0, (cropRect.x / (videoStageRef.current.clientWidth || 1)) * 100)}%)`
-                      } : {})
+                      position: 'absolute',
+                      left: `${cropBox.x}%`,
+                      top: `${cropBox.y}%`,
+                      width: `${cropBox.w}%`,
+                      height: `${cropBox.h}%`,
+                      border: '2px solid #ffffff',
+                      boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(99, 102, 241, 0.9)',
+                      cursor: 'move',
+                      boxSizing: 'border-box',
+                      zIndex: 20
                     }}
                   >
-                    <video
-                      ref={videoRef}
-                      src={mediaUrl}
-                      onLoadedMetadata={handleLoadedMetadata}
-                      onTimeUpdate={handleVideoTimeUpdate}
-                      onPlay={() => setIsPlaying(true)}
-                      onPause={() => setIsPlaying(false)}
-                      muted={videoMuted}
-                      style={{
-                        width: '100%',
-                        height: '100%',
-                        objectFit: cropAspect === 'free' ? 'contain' : 'cover',
-                        filter: getFilterCSS(),
-                        transform: `rotate(${rotation}deg) scaleX(${flipH ? -1 : 1}) scaleY(${flipV ? -1 : 1})`,
-                        transition: 'transform 0.2s ease'
-                      }}
-                    />
-                  </div>
+                    {/* Rule-of-Thirds Grid Lines */}
+                    <div style={{ position: 'absolute', left: '33.33%', top: 0, bottom: 0, width: '1px', background: 'rgba(255,255,255,0.3)', pointerEvents: 'none' }} />
+                    <div style={{ position: 'absolute', left: '66.66%', top: 0, bottom: 0, width: '1px', background: 'rgba(255,255,255,0.3)', pointerEvents: 'none' }} />
+                    <div style={{ position: 'absolute', top: '33.33%', left: 0, right: 0, height: '1px', background: 'rgba(255,255,255,0.3)', pointerEvents: 'none' }} />
+                    <div style={{ position: 'absolute', top: '66.66%', left: 0, right: 0, height: '1px', background: 'rgba(255,255,255,0.3)', pointerEvents: 'none' }} />
 
-                  {/* Video Crop Overlay Box */}
-                  {activeTab === 'crop' && cropRect && dragging && (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        left: cropRect.x + 'px', top: cropRect.y + 'px',
-                        width: cropRect.w + 'px', height: cropRect.h + 'px',
-                        border: '2px solid #6366f1', background: 'rgba(99,102,241,0.18)',
-                        boxShadow: '0 0 0 9999px rgba(0,0,0,0.6)', pointerEvents: 'none'
-                      }}
-                    />
-                  )}
-                </div>
-
-                {/* Timeline Bar */}
-                <div style={{ width: '100%', padding: '0 8px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.74rem', color: 'var(--text-muted)', marginBottom: '6px', fontFamily: 'var(--font-mono)' }}>
-                    <span>{fmtTime(videoCurrentTime)}</span>
-                    <span style={{ color: '#6366f1', fontWeight: 700 }}>Trim Range: {fmtTime(trimStart)} → {fmtTime(trimEnd)}</span>
-                    <span>{fmtTime(videoDuration)}</span>
-                  </div>
-
-                  <div
-                    ref={timelineRef}
-                    style={{ position: 'relative', height: '48px', background: 'rgba(255,255,255,0.06)', borderRadius: '10px', border: '1px solid var(--border-strong)', cursor: 'pointer', userSelect: 'none', overflow: 'visible' }}
-                    onClick={handleScrub} onMouseDown={handleTimelineDown}
-                    onMouseMove={handleTimelineMove} onMouseUp={handleTimelineUp} onMouseLeave={handleTimelineUp}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', height: '100%', gap: '2px', padding: '0 4px', overflow: 'hidden' }}>
-                      {Array.from({ length: 70 }, (_, i) => (
-                        <div key={i} style={{ flex: 1, height: `${16 + Math.sin(i * 0.8) * 14 + Math.cos(i * 1.3) * 8}px`, background: i / 70 >= trimStart / Math.max(1, videoDuration) && i / 70 <= trimEnd / Math.max(1, videoDuration) ? 'rgba(99,102,241,0.7)' : 'rgba(255,255,255,0.12)', borderRadius: '2px' }} />
-                      ))}
-                    </div>
-                    <div style={{ position: 'absolute', top: 0, bottom: 0, left: `${startPct}%`, width: `${endPct - startPct}%`, background: 'rgba(99,102,241,0.2)', border: '2px solid #6366f1', borderRadius: '6px', pointerEvents: 'none' }} />
-                    <div style={{ position: 'absolute', top: 0, bottom: 0, left: `${startPct}%`, width: '14px', marginLeft: '-7px', background: '#6366f1', borderRadius: '6px 0 0 6px', cursor: 'ew-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3 }}>
-                      <Scissors size={9} color="#fff" />
-                    </div>
-                    <div style={{ position: 'absolute', top: 0, bottom: 0, left: `${endPct}%`, width: '14px', marginLeft: '-7px', background: '#6366f1', borderRadius: '0 6px 6px 0', cursor: 'ew-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3 }}>
-                      <Scissors size={9} color="#fff" />
-                    </div>
-                    <div style={{ position: 'absolute', top: '-4px', bottom: '-4px', left: `${curPct}%`, width: '3px', marginLeft: '-1.5px', background: '#f59e0b', borderRadius: '2px', pointerEvents: 'none', zIndex: 4 }} />
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '8px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <button className="btn btn-ghost btn-icon" onClick={() => skipBy(-5)}><SkipBack size={15} /></button>
-                      <button className="btn btn-primary" onClick={togglePlay} style={{ borderRadius: '50%', width: '36px', height: '36px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        {isPlaying ? <Pause size={15} /> : <Play size={15} />}
-                      </button>
-                      <button className="btn btn-ghost btn-icon" onClick={() => skipBy(5)}><SkipForward size={15} /></button>
-                      <button className="btn btn-ghost btn-icon" onClick={() => setVideoMuted(v => !v)}>
-                        {videoMuted ? <VolumeX size={16} color="var(--accent-rose)" /> : <Volume2 size={16} />}
-                      </button>
+                    {/* Live Dimensions Readout Pill */}
+                    <div style={{
+                      position: 'absolute',
+                      top: '6px',
+                      left: '6px',
+                      background: 'rgba(9, 10, 15, 0.8)',
+                      color: '#ffffff',
+                      fontSize: '0.68rem',
+                      fontWeight: 600,
+                      padding: '2px 7px',
+                      borderRadius: '4px',
+                      pointerEvents: 'none',
+                      fontFamily: 'monospace'
+                    }}>
+                      {previewCropPxW} &times; {previewCropPxH}
                     </div>
 
-                    <div style={{ display: 'flex', gap: '4px' }}>
-                      {[0.5, 1.0, 1.5, 2.0].map(spd => (
-                        <button key={spd} onClick={() => { setVideoSpeed(spd); if (videoRef.current) videoRef.current.playbackRate = spd; }}
-                          style={{
-                            padding: '3px 8px', borderRadius: '6px', border: 'none', fontSize: '0.72rem', fontWeight: '700', cursor: 'pointer',
-                            background: videoSpeed === spd ? 'var(--accent-primary)' : 'var(--bg-surface)',
-                            color: videoSpeed === spd ? '#fff' : 'var(--text-muted)'
-                          }}>
-                          {spd}x
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* ── RIGHT CONTROL PANEL ── */}
-          <div style={{ borderLeft: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-surface)' }}>
-              {tabs.map(t => (
-                <button
-                  key={t.key}
-                  onClick={() => setActiveTab(t.key)}
-                  style={{
-                    flex: 1, padding: '11px 2px', border: 'none', background: 'transparent', fontSize: '0.76rem', fontWeight: '700', cursor: 'pointer',
-                    color: activeTab === t.key ? 'var(--accent-primary)' : 'var(--text-muted)',
-                    borderBottom: activeTab === t.key ? '2px solid var(--accent-primary)' : '2px solid transparent'
-                  }}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-
-            <div style={{ flex: 1, overflowY: 'auto', padding: '14px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-
-              {/* FILTERS */}
-              {activeTab === 'filters' && (
-                <div>
-                  <div style={{ fontSize: '0.7rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase' }}>Instagram Presets</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-                    {FILTERS.map(f => (
-                      <button
-                        key={f.key}
-                        onClick={() => applyPreset(f)}
+                    {/* 8 Resize Handles */}
+                    {[
+                      { mode: 'nw', style: { top: '-6px', left: '-6px', cursor: 'nwse-resize' } },
+                      { mode: 'ne', style: { top: '-6px', right: '-6px', cursor: 'nesw-resize' } },
+                      { mode: 'sw', style: { bottom: '-6px', left: '-6px', cursor: 'nesw-resize' } },
+                      { mode: 'se', style: { bottom: '-6px', right: '-6px', cursor: 'nwse-resize' } },
+                      { mode: 'n', style: { top: '-5px', left: 'calc(50% - 6px)', cursor: 'ns-resize' } },
+                      { mode: 's', style: { bottom: '-5px', left: 'calc(50% - 6px)', cursor: 'ns-resize' } },
+                      { mode: 'w', style: { left: '-5px', top: 'calc(50% - 6px)', cursor: 'ew-resize' } },
+                      { mode: 'e', style: { right: '-5px', top: 'calc(50% - 6px)', cursor: 'ew-resize' } }
+                    ].map(h => (
+                      <div
+                        key={h.mode}
+                        onMouseDown={(e) => startCropInteraction(e, h.mode)}
+                        onTouchStart={(e) => startCropInteraction(e, h.mode)}
                         style={{
-                          padding: '9px 6px', borderRadius: '10px', border: 'none', fontSize: '0.76rem', fontWeight: '600', cursor: 'pointer',
-                          background: activeFilter === f.key ? 'rgba(99,102,241,0.25)' : 'var(--bg-input)',
-                          color: activeFilter === f.key ? 'var(--accent-primary)' : 'var(--text-secondary)',
-                          outline: activeFilter === f.key ? '1.5px solid var(--accent-primary)' : 'none'
+                          position: 'absolute',
+                          width: '12px',
+                          height: '12px',
+                          borderRadius: '3px',
+                          background: 'var(--accent-primary)',
+                          border: '2px solid #ffffff',
+                          ...h.style
                         }}
-                      >
-                        {f.label}
-                      </button>
+                      />
                     ))}
                   </div>
+                )}
+              </div>
+            )}
+
+            {/* Video Render Progress Overlay */}
+            {isVideo && saving && (
+              <div style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'rgba(9, 10, 15, 0.82)',
+                backdropFilter: 'blur(6px)',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '12px',
+                zIndex: 40
+              }}>
+                <Loader2 size={32} className="spin" color="var(--accent-primary)" />
+                <div style={{ fontSize: '0.92rem', fontWeight: 600, color: '#ffffff' }}>
+                  Rendering Edited Video Stream... ({renderProgress}%)
                 </div>
-              )}
-
-              {/* ADJUST */}
-              {activeTab === 'adjust' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  {[
-                    { label: 'Brightness', val: brightness, set: setBrightness, min: 30, max: 200, unit: '%' },
-                    { label: 'Contrast', val: contrast, set: setContrast, min: 30, max: 200, unit: '%' },
-                    { label: 'Saturation', val: saturate, set: setSaturate, min: 0, max: 250, unit: '%' },
-                    { label: 'Hue Shift', val: hueRotate, set: setHueRotate, min: 0, max: 360, unit: '°' },
-                    { label: 'Blur', val: blur, set: setBlur, min: 0, max: 12, unit: 'px' },
-                    { label: 'Sepia', val: sepia, set: setSepia, min: 0, max: 100, unit: '%' },
-                    { label: 'Grayscale', val: grayscale, set: setGrayscale, min: 0, max: 100, unit: '%' }
-                  ].map(({ label, val, set, min, max, unit }) => (
-                    <div key={label} style={{ fontSize: '0.76rem' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: '3px' }}>
-                        <span>{label}</span>
-                        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-primary)' }}>{val}{unit}</span>
-                      </div>
-                      <input type="range" min={min} max={max} value={val} onChange={e => { set(parseInt(e.target.value)); setActiveFilter('custom'); }} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
-                    </div>
-                  ))}
-
-                  {isImage && (
-                    <div className="form-group">
-                      <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><Type size={12} /> WATERMARK</label>
-                      <input type="text" className="input-text" placeholder="e.g. © 2026 Storage Bank" value={watermarkText} onChange={e => setWatermarkText(e.target.value)} style={{ fontSize: '0.82rem' }} />
-                    </div>
-                  )}
+                <div style={{ width: '260px', height: '6px', borderRadius: '999px', background: 'rgba(255,255,255,0.12)', overflow: 'hidden' }}>
+                  <div style={{ width: `${renderProgress}%`, height: '100%', background: 'var(--accent-primary)', transition: 'width 0.15s ease' }} />
                 </div>
-              )}
-
-              {/* CROP */}
-              {activeTab === 'crop' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <div style={{ padding: '10px 12px', background: 'rgba(99,102,241,0.1)', borderRadius: '10px', border: '1px solid rgba(99,102,241,0.25)', fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
-                    <strong style={{ color: 'var(--accent-primary)' }}>Aspect Ratio Presets:</strong><br />
-                    Click an aspect ratio below to crop instantly, or drag on the stage.
-                  </div>
-
-                  <div>
-                    <div style={{ fontSize: '0.7rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '7px', textTransform: 'uppercase' }}>Aspect Ratios</div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-                      {[{ key: 'free', label: 'Freehand' }, { key: '1:1', label: '1:1 Square' }, { key: '16:9', label: '16:9 HD' }, { key: '4:3', label: '4:3 Standard' }, { key: '9:16', label: '9:16 Reel' }, { key: '21:9', label: '21:9 Cinema' }].map(c => (
-                        <button
-                          key={c.key}
-                          onClick={() => handleSelectAspectPreset(c.key)}
-                          style={{
-                            padding: '8px 4px', borderRadius: '9px', border: 'none', fontSize: '0.75rem', fontWeight: '600', cursor: 'pointer',
-                            background: cropAspect === c.key ? 'rgba(99,102,241,0.25)' : 'var(--bg-input)',
-                            color: cropAspect === c.key ? 'var(--accent-primary)' : 'var(--text-secondary)',
-                            outline: cropAspect === c.key ? '1.5px solid var(--accent-primary)' : 'none'
-                          }}
-                        >
-                          {c.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {(cropApplied || cropRect) && (
-                    <button
-                      onClick={() => { setCropRect(null); setCropApplied(false); setCropAspect('free'); }}
-                      style={{ padding: '9px', borderRadius: '10px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5', fontSize: '0.78rem', fontWeight: '700', cursor: 'pointer' }}
-                    >
-                      ✕ Reset Crop
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {/* TRANSFORM */}
-              {activeTab === 'transform' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <div style={{ fontSize: '0.7rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Rotate & Flip</div>
-                  <div style={{ display: 'flex', gap: '7px' }}>
-                    <button className="btn btn-secondary" onClick={() => setRotation(r => (r + 90) % 360)} style={{ flex: 1, fontSize: '0.78rem' }}>
-                      <RotateCw size={13} /> 90° CW
-                    </button>
-                    <button className="btn btn-secondary" onClick={() => setRotation(r => (r + 270) % 360)} style={{ flex: 1, fontSize: '0.78rem' }}>
-                      <RotateCw size={13} style={{ transform: 'scaleX(-1)' }} /> CCW
-                    </button>
-                  </div>
-                  <div style={{ display: 'flex', gap: '7px' }}>
-                    <button className="btn btn-secondary" onClick={() => setFlipH(v => !v)} style={{ flex: 1, fontSize: '0.78rem', background: flipH ? 'rgba(99,102,241,0.2)' : '', color: flipH ? 'var(--accent-primary)' : '' }}>
-                      <FlipHorizontal size={13} /> Flip H
-                    </button>
-                    <button className="btn btn-secondary" onClick={() => setFlipV(v => !v)} style={{ flex: 1, fontSize: '0.78rem', background: flipV ? 'rgba(99,102,241,0.2)' : '', color: flipV ? 'var(--accent-primary)' : '' }}>
-                      <FlipVertical size={13} /> Flip V
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Footer */}
-        <div style={{ borderTop: '1px solid var(--border-subtle)', padding: '12px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', background: 'var(--bg-surface)', flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div style={{ display: 'flex', background: 'var(--bg-input)', borderRadius: '10px', border: '1px solid var(--border-subtle)', padding: '3px', gap: '2px' }}>
-              <button
-                onClick={() => setSaveMode('new')}
-                style={{
-                  padding: '6px 14px', borderRadius: '8px', border: 'none', fontSize: '0.78rem', fontWeight: '700', cursor: 'pointer',
-                  background: saveMode === 'new' ? 'var(--accent-primary)' : 'transparent',
-                  color: saveMode === 'new' ? '#fff' : 'var(--text-muted)'
-                }}
-              >
-                <Copy size={13} style={{ marginRight: '5px', verticalAlign: 'middle' }} /> Save as New
-              </button>
-              <button
-                onClick={() => setSaveMode('replace')}
-                style={{
-                  padding: '6px 14px', borderRadius: '8px', border: 'none', fontSize: '0.78rem', fontWeight: '700', cursor: 'pointer',
-                  background: saveMode === 'replace' ? '#ef4444' : 'transparent',
-                  color: saveMode === 'replace' ? '#fff' : 'var(--text-muted)'
-                }}
-              >
-                <Replace size={13} style={{ marginRight: '5px', verticalAlign: 'middle' }} /> Replace Original
-              </button>
-            </div>
-
-            {saveMode === 'new' && (
+        {/* Footer Bar */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '10px 16px',
+          borderTop: '1px solid var(--border-subtle)',
+          background: 'var(--bg-surface)',
+          flexShrink: 0,
+          flexWrap: 'wrap',
+          gap: '12px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
               <input
-                type="text"
-                value={customNewName}
-                onChange={e => setCustomNewName(e.target.value)}
-                placeholder="Enter file name..."
-                style={{
-                  background: 'var(--bg-input)',
-                  border: '1px solid var(--border-strong)',
-                  borderRadius: '8px',
-                  padding: '6px 12px',
-                  color: 'var(--text-primary)',
-                  fontSize: '0.8rem',
-                  width: '200px'
-                }}
+                type="radio"
+                name="mediaSaveMode"
+                checked={saveMode === 'replace'}
+                onChange={() => setSaveMode('replace')}
               />
+              <span>Replace in Vault</span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+              <input
+                type="radio"
+                name="mediaSaveMode"
+                checked={saveMode === 'new'}
+                onChange={() => setSaveMode('new')}
+              />
+              <span>{isVideo ? 'Save as New Video' : 'Save as New Image'}</span>
+            </label>
+            {isVideo && videoDuration > 0 && (
+              <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <Film size={12} />
+                <span>Clip: {formatTime(trimStart)} &ndash; {formatTime(trimEnd)} ({Math.max(0, trimEnd - trimStart).toFixed(1)}s)</span>
+              </span>
             )}
           </div>
 
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
-            <button className="btn btn-secondary" onClick={handleDownload} disabled={saving}><Download size={15} /> Download</button>
-            <button className="btn btn-primary" onClick={handleSave} disabled={saving} style={{ minWidth: '160px' }}>
-              {saving ? (
-                <><Loader2 size={15} className="spin" /> Saving...</>
-              ) : (
-                <><HardDrive size={15} /> {saveMode === 'replace' ? 'Replace Original' : 'Save as New'}</>
-              )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              className="btn btn-secondary"
+              onClick={handleDownload}
+              disabled={saving}
+              style={{ fontSize: '0.8rem', padding: '6px 12px', borderRadius: '6px', gap: '5px' }}
+            >
+              <Download size={13} />
+              <span>{isVideo ? 'Export & Download' : 'Download'}</span>
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={onClose}
+              disabled={saving}
+              style={{ fontSize: '0.8rem', padding: '6px 12px', borderRadius: '6px' }}
+            >
+              Cancel
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={handleSaveToVault}
+              disabled={saving}
+              style={{ fontSize: '0.8rem', padding: '6px 14px', borderRadius: '6px', gap: '6px' }}
+            >
+              <Save size={13} />
+              <span>{saving ? 'Rendering...' : saveMode === 'replace' ? 'Save Changes' : 'Save to Vault'}</span>
             </button>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ControlSlider({ label, value, min, max, unit, onChange }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0, fontSize: '0.74rem' }}>
+      <span style={{ color: 'var(--text-muted)', minWidth: '65px' }}>{label}:</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        style={{ width: '80px', accentColor: 'var(--accent-primary)' }}
+      />
+      <span style={{ color: 'var(--text-secondary)', width: '38px', fontVariantNumeric: 'tabular-nums' }}>
+        {value}{unit}
+      </span>
     </div>
   );
 }

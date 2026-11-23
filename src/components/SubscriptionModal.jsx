@@ -1,492 +1,517 @@
 import React, { useState } from 'react';
 import {
-  Sparkles, Check, CreditCard, ShieldCheck, Zap,
-  X, AlertCircle, PhoneCall, RefreshCw, Star, Download,
-  CheckCircle2, Lock, ArrowRight, ShieldAlert
+  ShieldCheck,
+  X,
+  Check,
+  HardDrive,
+  Lock,
+  ArrowLeft,
+  Loader2,
+  CheckCircle2,
+  Smartphone,
+  Copy
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-
-// Real Luhn Algorithm Validator for Credit/Debit Cards
-function validateLuhn(cardNumber) {
-  const digits = cardNumber.replace(/\D/g, '');
-  if (digits.length < 13 || digits.length > 19) return false;
-  let sum = 0;
-  let shouldDouble = false;
-  for (let i = digits.length - 1; i >= 0; i--) {
-    let digit = parseInt(digits.charAt(i), 10);
-    if (shouldDouble) {
-      digit *= 2;
-      if (digit > 9) digit -= 9;
-    }
-    sum += digit;
-    shouldDouble = !shouldDouble;
-  }
-  return sum % 10 === 0;
-}
+import { useStorage } from '../context/StorageContext';
+import { STORAGE_PLANS, BKASH_MERCHANT_NUMBER, getPlanQuota, formatBytes } from '../utils/planQuotas';
 
 export function SubscriptionModal({ isOpen, onClose }) {
   const { user, updateUserProfile } = useAuth();
-  const [selectedPlan, setSelectedPlan] = useState('pro');
-  const [paymentMethod, setPaymentMethod] = useState('card');
+  const { storageStats, addToast } = useStorage();
+
+  const [checkoutPlan, setCheckoutPlan] = useState(null);
+  const [senderBkash, setSenderBkash] = useState('');
   const [trxId, setTrxId] = useState('');
-  const [phone, setPhone] = useState('');
-  const [cardNumber, setCardNumber] = useState('');
-  const [cardExpiry, setCardExpiry] = useState('');
-  const [cardCvc, setCardCvc] = useState('');
-  const [processing, setProcessing] = useState(false);
-  const [validationError, setValidationError] = useState('');
-
-  // 3D Secure / OTP Challenge Step
-  const [otpStep, setOtpStep] = useState(false);
-  const [otpCode, setOtpCode] = useState('');
-  const [otpError, setOtpError] = useState('');
-
-  // Success and Receipt
-  const [receiptData, setReceiptData] = useState(null);
+  const [copiedNumber, setCopiedNumber] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [paymentSuccess, setPaymentSuccess] = useState(false);
+  const [formError, setFormError] = useState('');
 
   if (!isOpen) return null;
 
-  const currentPlan = user?.plan || 'trial';
+  const currentPlanObj = getPlanQuota(user?.plan);
+  const usedBytes = storageStats?.totalBytes || 0;
+  const quotaBytes = currentPlanObj.quotaBytes;
+  const usagePercent = Math.min(100, Math.max(0.01, (usedBytes / quotaBytes) * 100)).toFixed(2);
 
-  const downloadReceipt = () => {
-    if (!receiptData) return;
-    const html = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <title>Receipt - Storage Bank Vault ${receiptData.orderId}</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 40px; color: #1e293b; max-width: 600px; margin: auto; }
-    .header { border-bottom: 2px solid #6366f1; padding-bottom: 16px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; }
-    .badge { background: #dcfce7; color: #15803d; padding: 4px 10px; border-radius: 99px; font-weight: 700; font-size: 13px; }
-    .row { display: flex; justify-content: space-between; margin-bottom: 12px; font-size: 14px; }
-    .total { border-top: 1px solid #e2e8f0; margin-top: 16px; padding-top: 16px; font-size: 18px; font-weight: 800; display: flex; justify-content: space-between; color: #0f172a; }
-    .license { background: #f1f5f9; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 14px; word-break: break-all; margin-top: 20px; border: 1px dashed #cbd5e1; }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h2>Storage Bank Vault</h2>
-    <span class="badge">PAID & VERIFIED</span>
-  </div>
-  <div class="row"><strong>Invoice No:</strong> <span>${receiptData.orderId}</span></div>
-  <div class="row"><strong>Date:</strong> <span>${receiptData.date}</span></div>
-  <div class="row"><strong>Customer:</strong> <span>${user?.username || 'Vault Master'} (${user?.email || 'user@vault'})</span></div>
-  <div class="row"><strong>Plan:</strong> <span>${receiptData.planName}</span></div>
-  <div class="row"><strong>Payment Method:</strong> <span>${receiptData.paymentMethod.toUpperCase()}</span></div>
-  <div class="row"><strong>Transaction Hash:</strong> <span>${receiptData.txHash}</span></div>
-  <div class="total">
-    <span>Amount Paid:</span>
-    <span>${receiptData.amount}</span>
-  </div>
-  <div class="license">
-    <strong>Vault License Key:</strong><br/>
-    ${receiptData.licenseKey}
-  </div>
-  <p style="font-size: 11px; color: #64748b; margin-top: 30px; text-align: center;">
-    Thank you for subscribing to Storage Bank Vault VIP. Your account is upgraded in real-time.
-  </p>
-</body>
-</html>`;
-    const blob = new Blob([html], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `StorageBank_Receipt_${receiptData.orderId}.html`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const completeUpgrade = (methodUsed) => {
-    const orderId = `INV-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
-    const txHash = `0x${Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('')}`;
-    const licenseKey = `SB-VIP-${Math.random().toString(36).substr(2, 4).toUpperCase()}-${Math.random().toString(36).substr(2, 4).toUpperCase()}-${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
-    const planName = selectedPlan === 'lifetime' ? 'Ultra Lifetime VIP (Unlimited)' : 'Pro Monthly VIP (Unlimited)';
-    const amount = selectedPlan === 'lifetime' ? '$49.99' : '$9.99';
-
-    const rData = {
-      orderId,
-      txHash,
-      licenseKey,
-      planName,
-      amount,
-      paymentMethod: methodUsed,
-      date: new Date().toLocaleString()
-    };
-
-    setReceiptData(rData);
-    setProcessing(false);
-    setOtpStep(false);
-
-    updateUserProfile({
-      plan: planName,
-      licenseKey,
-      subscriptionDate: new Date().toISOString(),
-      paymentMethod: methodUsed
-    });
-  };
-
-  const handleInitiatePayment = (e) => {
-    e.preventDefault();
-    setValidationError('');
-
-    if (paymentMethod === 'card') {
-      const cleanCard = cardNumber.replace(/\s+/g, '');
-      if (!validateLuhn(cleanCard)) {
-        setValidationError('Invalid card number. Please check your 16-digit card digits.');
-        return;
-      }
-      const expMatch = cardExpiry.match(/^(0[1-9]|1[0-2])\/([0-9]{2})$/);
-      if (!expMatch) {
-        setValidationError('Card expiration must be in MM/YY format (e.g. 12/28).');
-        return;
-      }
-      if (cardCvc.length < 3 || cardCvc.length > 4) {
-        setValidationError('CVV/CVC must be 3 or 4 digits.');
-        return;
-      }
-
-      // Card is mathematically valid — launch 3D Secure Verification
-      setProcessing(true);
-      setTimeout(() => {
-        setProcessing(false);
-        setOtpStep(true);
-      }, 700);
-    } else {
-      // bKash / Nagad
-      const cleanPhone = phone.replace(/[\s-]/g, '');
-      if (!cleanPhone.match(/^01[3-9]\d{8}$/)) {
-        setValidationError('Please enter a valid 11-digit Bangladeshi mobile number (01xxxxxxxxx).');
-        return;
-      }
-      if (trxId.trim().length < 8) {
-        setValidationError('Transaction ID (TrxID) must be at least 8 alphanumeric characters.');
-        return;
-      }
-
-      setProcessing(true);
-      setTimeout(() => {
-        completeUpgrade('bkash_nagad');
-      }, 1200);
+  const handleDowngradeToFree = async () => {
+    const res = await updateUserProfile({ plan: STORAGE_PLANS.FREE.displayName });
+    if (res.success) {
+      if (addToast) addToast('Storage plan set to Free Tier (512 GB).', 'info');
     }
   };
 
-  const handleVerifyOtp = (e) => {
+  const handleStartCheckout = (targetPlan) => {
+    setCheckoutPlan(targetPlan);
+    setSenderBkash('');
+    setTrxId('');
+    setFormError('');
+    setPaymentSuccess(false);
+  };
+
+  const handleCopyBkash = () => {
+    navigator.clipboard.writeText(BKASH_MERCHANT_NUMBER.replace(/-/g, ''));
+    setCopiedNumber(true);
+    if (addToast) addToast('Copied bKash number to clipboard', 'info');
+    setTimeout(() => setCopiedNumber(false), 2000);
+  };
+
+  const handleProcessBkashPayment = async (e) => {
     e.preventDefault();
-    setOtpError('');
-    if (otpCode.trim().length !== 6) {
-      setOtpError('Please enter the 6-digit SMS verification code (e.g. 123456).');
+    if (!checkoutPlan) return;
+
+    const cleanPhone = senderBkash.replace(/\D/g, '');
+    if (cleanPhone.length < 11) {
+      setFormError('Please enter a valid 11-digit bKash mobile number (e.g. 017XXXXXXXX).');
       return;
     }
-    setProcessing(true);
+    if (trxId.trim().length < 6) {
+      setFormError('Please enter a valid bKash Transaction ID (TrxID).');
+      return;
+    }
+
+    setFormError('');
+    setIsProcessing(true);
+    await new Promise(r => setTimeout(r, 850));
+
+    try {
+      const txRaw = localStorage.getItem('storagebank_bkash_transactions');
+      const txList = txRaw ? JSON.parse(txRaw) : [];
+      txList.unshift({
+        id: `tx_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        userId: user?.id || 'local',
+        userName: user?.username || 'Vault User',
+        userEmail: user?.email || 'user@storagebank.vault',
+        plan: checkoutPlan.displayName,
+        amount: checkoutPlan.priceLabel,
+        senderBkash: cleanPhone,
+        trxId: trxId.trim().toUpperCase(),
+        status: 'pending',
+        timestamp: new Date().toISOString()
+      });
+      localStorage.setItem('storagebank_bkash_transactions', JSON.stringify(txList.slice(0, 50)));
+    } catch {}
+
+    setIsProcessing(false);
+    setPaymentSuccess(true);
+    if (addToast) {
+      addToast(`bKash TrxID ${trxId.toUpperCase()} submitted for Admin verification.`, 'info');
+    }
     setTimeout(() => {
-      completeUpgrade('credit_debit_card');
-    }, 1000);
+      setCheckoutPlan(null);
+      setPaymentSuccess(false);
+    }, 2400);
   };
+
+  const planList = [STORAGE_PLANS.FREE, STORAGE_PLANS.PRO, STORAGE_PLANS.ULTRA];
 
   return (
     <div className="modal-overlay" style={{ zIndex: 4000 }} onClick={onClose}>
       <div
-        className="modal-content glass-panel"
+        className="modal-content"
         onClick={e => e.stopPropagation()}
         style={{
-          maxWidth: '620px',
+          maxWidth: checkoutPlan ? '500px' : '780px',
           width: '95vw',
           maxHeight: '92vh',
           overflowY: 'auto',
-          padding: '28px',
-          borderRadius: '24px',
-          position: 'relative'
+          padding: '24px',
+          borderRadius: '12px',
+          position: 'relative',
+          background: 'var(--bg-modal)',
+          border: '1px solid var(--border-subtle)',
+          transition: 'all 0.2s ease'
         }}
       >
         <button
           className="btn btn-ghost btn-icon"
           onClick={onClose}
-          style={{ position: 'absolute', top: '16px', right: '16px' }}
+          style={{ position: 'absolute', top: '16px', right: '16px', padding: '4px' }}
         >
-          <X size={18} />
+          <X size={16} />
         </button>
 
-        {receiptData ? (
-          /* Receipt Screen */
-          <div style={{ textAlign: 'center', padding: '10px 0' }}>
-            <div style={{
-              width: '64px', height: '64px', borderRadius: '50%',
-              background: 'rgba(16, 185, 129, 0.15)', color: '#10b981',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              margin: '0 auto 16px auto', border: '2px solid #10b981'
-            }}>
-              <CheckCircle2 size={36} />
-            </div>
-            <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: '#ffffff' }}>Payment Verified & Active!</h2>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', marginTop: '4px' }}>
-              Your account is upgraded to <strong>{receiptData.planName}</strong>
-            </p>
+        {/* ── BKASH CHECKOUT PAYMENT VIEW ──────────────────────────────── */}
+        {checkoutPlan ? (
+          <div>
+            <button
+              className="btn btn-ghost"
+              onClick={() => { setCheckoutPlan(null); setPaymentSuccess(false); }}
+              style={{ padding: '4px 8px', fontSize: '0.78rem', gap: '6px', marginBottom: '14px', borderRadius: '6px' }}
+            >
+              <ArrowLeft size={13} />
+              <span>Back to Plans</span>
+            </button>
 
+            {/* bKash Header Banner */}
             <div style={{
-              background: 'var(--bg-card)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              padding: '14px 16px',
+              borderRadius: '10px',
+              background: 'rgba(226, 19, 110, 0.1)',
+              border: '1px solid rgba(226, 19, 110, 0.3)',
+              marginBottom: '16px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{
+                  width: '42px',
+                  height: '42px',
+                  borderRadius: '9px',
+                  background: '#e2136e',
+                  color: '#ffffff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontWeight: 800,
+                  fontSize: '0.82rem',
+                  flexShrink: 0
+                }}>
+                  bKash
+                </div>
+                <div>
+                  <h3 style={{ fontSize: '1.02rem', fontWeight: 700, margin: 0, color: 'var(--text-primary)' }}>
+                    bKash Payment &bull; {checkoutPlan.name}
+                  </h3>
+                  <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', margin: '2px 0 0 0' }}>
+                    {checkoutPlan.quotaGB >= 1024 ? `${checkoutPlan.quotaGB / 1024} TB` : `${checkoutPlan.quotaGB} GB`} Cloud Storage &bull; <strong>{checkoutPlan.price}</strong>
+                  </p>
+                </div>
+              </div>
+              <span style={{
+                fontSize: '0.88rem',
+                fontWeight: 800,
+                color: '#f472b6',
+                background: 'var(--bg-surface)',
+                padding: '4px 10px',
+                borderRadius: '6px',
+                border: '1px solid rgba(226, 19, 110, 0.3)'
+              }}>
+                ৳{checkoutPlan.priceBDT}
+              </span>
+            </div>
+
+            {paymentSuccess ? (
+              <div style={{
+                background: 'rgba(16, 185, 129, 0.1)',
+                border: '1px solid rgba(16, 185, 129, 0.3)',
+                padding: '24px',
+                borderRadius: '9px',
+                textAlign: 'center',
+                color: 'var(--accent-emerald)'
+              }}>
+                <CheckCircle2 size={36} style={{ margin: '0 auto 10px auto', display: 'block' }} />
+                <h4 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700 }}>bKash TrxID Submitted for Verification</h4>
+                <p style={{ fontSize: '0.82rem', margin: '6px 0 0 0', opacity: 0.9 }}>
+                  TrxID <strong>{trxId.toUpperCase()}</strong> has been queued for Admin approval. Your quota will upgrade to {checkoutPlan.displayName} upon verification.
+                </p>
+              </div>
+            ) : (
+              <form onSubmit={handleProcessBkashPayment} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                {/* bKash Number Card */}
+                <div style={{
+                  background: 'var(--bg-surface)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: '9px',
+                  padding: '14px'
+                }}>
+                  <div style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '6px' }}>
+                    STEP 1: SEND MONEY / PAYMENT TO BKASH NUMBER
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Smartphone size={16} color="#e2136e" />
+                      <span style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.03em', fontFamily: 'monospace' }}>
+                        {BKASH_MERCHANT_NUMBER}
+                      </span>
+                      <span style={{
+                        fontSize: '0.66rem',
+                        padding: '2px 6px',
+                        borderRadius: '4px',
+                        background: 'rgba(226, 19, 110, 0.12)',
+                        color: '#f472b6',
+                        fontWeight: 600
+                      }}>
+                        Personal / Payment
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={handleCopyBkash}
+                      style={{ padding: '5px 10px', fontSize: '0.74rem', borderRadius: '6px', gap: '5px' }}
+                    >
+                      {copiedNumber ? <Check size={12} color="var(--accent-emerald)" /> : <Copy size={12} />}
+                      <span>{copiedNumber ? 'Copied' : 'Copy Number'}</span>
+                    </button>
+                  </div>
+                  <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '8px', lineHeight: 1.5 }}>
+                    Open your <strong>bKash App</strong> or dial <strong>*247#</strong> &rarr; Send <strong>৳{checkoutPlan.priceBDT} BDT</strong> to <strong>{BKASH_MERCHANT_NUMBER}</strong> &rarr; Enter your bKash number and Transaction ID below.
+                  </div>
+                </div>
+
+                {formError && (
+                  <div style={{
+                    padding: '9px 12px',
+                    borderRadius: '7px',
+                    background: 'rgba(244, 63, 94, 0.1)',
+                    border: '1px solid rgba(244, 63, 94, 0.25)',
+                    color: 'var(--accent-rose)',
+                    fontSize: '0.78rem'
+                  }}>
+                    {formError}
+                  </div>
+                )}
+
+                <div>
+                  <label style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: '5px' }}>
+                    YOUR BKASH ACCOUNT NUMBER
+                  </label>
+                  <input
+                    type="tel"
+                    className="input-text"
+                    placeholder="e.g. 017XXXXXXXX"
+                    value={senderBkash}
+                    onChange={e => setSenderBkash(e.target.value)}
+                    required
+                    style={{ width: '100%', padding: '9px 12px', fontSize: '0.86rem', borderRadius: '7px' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: '5px' }}>
+                    BKASH TRANSACTION ID (TrxID)
+                  </label>
+                  <input
+                    type="text"
+                    className="input-text"
+                    placeholder="e.g. BKS94M2X7Q"
+                    value={trxId}
+                    onChange={e => setTrxId(e.target.value.toUpperCase())}
+                    required
+                    style={{ width: '100%', padding: '9px 12px', fontSize: '0.86rem', borderRadius: '7px', fontFamily: 'monospace', letterSpacing: '0.05em' }}
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={isProcessing}
+                  style={{
+                    width: '100%',
+                    padding: '10px',
+                    fontSize: '0.86rem',
+                    fontWeight: 700,
+                    borderRadius: '7px',
+                    marginTop: '4px',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    background: '#e2136e',
+                    borderColor: 'rgba(255,255,255,0.18)'
+                  }}
+                >
+                  {isProcessing ? (
+                    <><Loader2 size={16} className="spin" /> <span>Verifying bKash TrxID...</span></>
+                  ) : (
+                    <><Lock size={14} /> <span>Verify ৳{checkoutPlan.priceBDT} bKash Payment &amp; Activate</span></>
+                  )}
+                </button>
+              </form>
+            )}
+          </div>
+        ) : (
+          /* ── TIERS OVERVIEW ────────────────────────────────────────── */
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '18px' }}>
+              <div style={{
+                width: '40px', height: '40px', borderRadius: '9px',
+                background: 'var(--bg-surface)', color: 'var(--accent-primary)',
+                border: '1px solid var(--border-subtle)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center'
+              }}>
+                <HardDrive size={20} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0, color: 'var(--text-primary)' }}>
+                  Storage Quotas &amp; Subscription Plans (BDT)
+                </h3>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
+                  All accounts include 512 GB free storage. Upgrade anytime via instant bKash payment.
+                </p>
+              </div>
+            </div>
+
+            {/* Active Storage Quota Bar */}
+            <div style={{
+              background: 'var(--bg-surface)',
               border: '1px solid var(--border-subtle)',
-              borderRadius: '16px',
+              borderRadius: '9px',
               padding: '16px',
-              margin: '20px 0',
-              textAlign: 'left',
-              fontSize: '0.82rem'
+              marginBottom: '20px'
             }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Invoice ID:</span>
-                <span style={{ fontWeight: 700 }}>{receiptData.orderId}</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  Active Vault Storage Usage
+                </span>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                  {formatBytes(usedBytes)} of {formatBytes(quotaBytes)} used ({usagePercent}%)
+                </span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>License Key:</span>
-                <span style={{ fontWeight: 700, color: 'var(--accent-cyan)', fontFamily: 'monospace' }}>{receiptData.licenseKey}</span>
+              <div style={{
+                height: '7px',
+                borderRadius: '999px',
+                background: 'rgba(255, 255, 255, 0.08)',
+                overflow: 'hidden'
+              }}>
+                <div style={{
+                  height: '100%',
+                  width: `${Math.max(1, usagePercent)}%`,
+                  borderRadius: '999px',
+                  background: 'var(--accent-primary)',
+                  transition: 'width 0.3s ease'
+                }} />
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Amount:</span>
-                <span style={{ fontWeight: 800, color: '#10b981' }}>{receiptData.amount}</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '10px', fontSize: '0.74rem', color: 'var(--text-muted)', flexWrap: 'wrap', gap: '8px' }}>
+                <span>Active Tier: <strong style={{ color: 'var(--text-primary)' }}>{currentPlanObj.displayName}</strong></span>
+                <span>bKash Merchant / Payment: <strong style={{ color: '#f472b6', fontFamily: 'monospace' }}>{BKASH_MERCHANT_NUMBER}</strong></span>
+                <span>Files Stored: <strong style={{ color: 'var(--text-primary)' }}>{storageStats?.totalFiles || 0}</strong></span>
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: '12px' }}>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={downloadReceipt}
-                style={{ flex: 1, padding: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-              >
-                <Download size={16} /> Download Receipt
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={onClose}
-                style={{ flex: 1, padding: '12px' }}
-              >
-                Enter Upgraded Vault
-              </button>
+            {/* 3 Tier Cards */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px', marginBottom: '20px' }}>
+              {planList.map(plan => {
+                const isActive = currentPlanObj.id === plan.id;
+                const isFree = plan.id === 'free';
+
+                return (
+                  <div
+                    key={plan.id}
+                    style={{
+                      background: isActive ? 'var(--bg-surface-hover)' : 'var(--bg-surface)',
+                      border: isActive ? '2px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                      borderRadius: '10px',
+                      padding: '16px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      justifyContent: 'space-between',
+                      position: 'relative'
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+                        <span style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                          {plan.name}
+                        </span>
+                        <span style={{
+                          fontSize: '0.62rem',
+                          padding: '2px 6px',
+                          borderRadius: '4px',
+                          background: isActive ? 'var(--accent-primary)' : 'var(--bg-input)',
+                          color: isActive ? '#ffffff' : 'var(--text-muted)',
+                          border: '1px solid var(--border-subtle)',
+                          fontWeight: 700
+                        }}>
+                          {plan.badge}
+                        </span>
+                      </div>
+
+                      <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '2px' }}>
+                        {plan.quotaGB >= 1024 ? `${plan.quotaGB / 1024} TB` : `${plan.quotaGB} GB`}
+                      </div>
+                      <div style={{ fontSize: '0.82rem', fontWeight: 700, color: isFree ? 'var(--accent-emerald)' : '#f472b6', marginBottom: '14px' }}>
+                        {plan.price}
+                      </div>
+
+                      <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+                        {plan.features.map((feat, fIdx) => (
+                          <li key={fIdx} style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', lineHeight: 1.35 }}>
+                            <Check size={13} color="var(--accent-emerald)" style={{ flexShrink: 0, marginTop: '2px' }} />
+                            <span>{feat}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    {isActive ? (
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        disabled
+                        style={{
+                          marginTop: '16px',
+                          width: '100%',
+                          fontSize: '0.8rem',
+                          padding: '8px',
+                          justifyContent: 'center',
+                          fontWeight: 600,
+                          opacity: 0.8
+                        }}
+                      >
+                        Active Plan
+                      </button>
+                    ) : isFree ? (
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={handleDowngradeToFree}
+                        style={{
+                          marginTop: '16px',
+                          width: '100%',
+                          fontSize: '0.8rem',
+                          padding: '8px',
+                          justifyContent: 'center',
+                          fontWeight: 600
+                        }}
+                      >
+                        Switch to Free (512 GB)
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={() => handleStartCheckout(plan)}
+                        style={{
+                          marginTop: '16px',
+                          width: '100%',
+                          fontSize: '0.8rem',
+                          padding: '8px',
+                          justifyContent: 'center',
+                          fontWeight: 600,
+                          gap: '6px',
+                          background: '#e2136e',
+                          borderColor: 'rgba(255,255,255,0.16)'
+                        }}
+                      >
+                        <Smartphone size={13} />
+                        <span>Pay with bKash ({plan.price.split(' ')[0]})</span>
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '8px',
+              fontSize: '0.74rem',
+              color: 'var(--text-muted)',
+              paddingTop: '12px',
+              borderTop: '1px solid var(--border-subtle)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <ShieldCheck size={14} color="var(--accent-emerald)" />
+                <span>Free Tier (512 GB) is active by default. Pro (৳199/mo) &amp; Ultra (৳499/mo) activate via bKash verification.</span>
+              </div>
+              <span style={{ color: '#f472b6', fontWeight: 600 }}>bKash: {BKASH_MERCHANT_NUMBER}</span>
             </div>
           </div>
-        ) : otpStep ? (
-          /* 3D Secure Bank Verification Modal */
-          <form onSubmit={handleVerifyOtp} style={{ textAlign: 'center', padding: '10px 0' }}>
-            <div style={{
-              width: '54px', height: '54px', borderRadius: '50%',
-              background: 'rgba(99, 102, 241, 0.15)', color: 'var(--accent-primary)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              margin: '0 auto 14px auto', border: '2px solid var(--accent-primary)'
-            }}>
-              <Lock size={26} />
-            </div>
-            <h3 style={{ fontSize: '1.3rem', fontWeight: 800, color: '#fff' }}>Bank 3D Secure Verification</h3>
-            <p style={{ fontSize: '0.84rem', color: 'var(--text-secondary)', margin: '6px 0 16px 0' }}>
-              A 6-digit confirmation code was dispatched to your mobile number ending in **49.
-            </p>
-
-            {otpError && (
-              <div style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#fca5a5', padding: '8px 12px', borderRadius: '10px', fontSize: '0.8rem', marginBottom: '12px' }}>
-                {otpError}
-              </div>
-            )}
-
-            <input
-              type="text"
-              maxLength={6}
-              placeholder="123456"
-              value={otpCode}
-              onChange={e => setOtpCode(e.target.value.replace(/\D/g, ''))}
-              required
-              autoFocus
-              style={{
-                width: '180px', textAlign: 'center', fontSize: '1.4rem',
-                letterSpacing: '8px', padding: '10px', borderRadius: '12px',
-                background: 'var(--bg-input)', border: '2px solid var(--accent-primary)',
-                color: '#fff', margin: '0 auto 16px auto', display: 'block'
-              }}
-            />
-
-            <button
-              type="submit"
-              disabled={processing}
-              className="btn btn-primary"
-              style={{ width: '100%', padding: '13px', fontSize: '0.95rem', fontWeight: 800, borderRadius: '14px' }}
-            >
-              {processing ? 'Authenticating with Bank...' : 'Authorize Transaction'}
-            </button>
-          </form>
-        ) : (
-          /* Main Payment Form */
-          <>
-            <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-              <div style={{
-                display: 'inline-flex', alignItems: 'center', gap: '6px',
-                background: 'rgba(99,102,241,0.15)', border: '1px solid var(--accent-primary)',
-                color: 'var(--accent-primary)', padding: '4px 14px', borderRadius: '20px',
-                fontSize: '0.78rem', fontWeight: 700, marginBottom: '8px'
-              }}>
-                <Sparkles size={14} /> STORAGE BANK VIP PLANS
-              </div>
-              <h2 style={{ fontSize: '1.5rem', fontWeight: 800, margin: '4px 0', color: '#fff' }}>
-                Upgrade Storage Bank Vault
-              </h2>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                Unlock high-speed batch transfers, media transcoding, and VIP license keys.
-              </p>
-            </div>
-
-            {/* Plan Selector */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '20px' }}>
-              <div
-                onClick={() => setSelectedPlan('pro')}
-                style={{
-                  border: selectedPlan === 'pro' ? '2px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
-                  background: selectedPlan === 'pro' ? 'rgba(99,102,241,0.12)' : 'var(--bg-card)',
-                  borderRadius: '16px', padding: '16px', cursor: 'pointer', transition: 'all 0.2s'
-                }}
-              >
-                <div style={{ fontWeight: 800, fontSize: '0.95rem', color: '#fff' }}>Pro Monthly</div>
-                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--accent-cyan)', margin: '4px 0' }}>$9.99<span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>/mo</span></div>
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Unlimited Vault + High Speed Sync</div>
-              </div>
-
-              <div
-                onClick={() => setSelectedPlan('lifetime')}
-                style={{
-                  border: selectedPlan === 'lifetime' ? '2px solid var(--accent-amber)' : '1px solid var(--border-subtle)',
-                  background: selectedPlan === 'lifetime' ? 'rgba(245,158,11,0.12)' : 'var(--bg-card)',
-                  borderRadius: '16px', padding: '16px', cursor: 'pointer', position: 'relative', transition: 'all 0.2s'
-                }}
-              >
-                <div style={{ position: 'absolute', top: '-10px', right: '12px', background: 'var(--accent-amber)', color: '#000', fontSize: '0.65rem', fontWeight: 900, padding: '2px 8px', borderRadius: '10px' }}>BEST VALUE</div>
-                <div style={{ fontWeight: 800, fontSize: '0.95rem', color: '#fff' }}>Ultra Lifetime</div>
-                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--accent-amber)', margin: '4px 0' }}>$49.99<span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}> once</span></div>
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Pay once, own permanent VIP key</div>
-              </div>
-            </div>
-
-            {/* Payment Method Switcher */}
-            <form onSubmit={handleInitiatePayment}>
-              <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
-                <button
-                  type="button"
-                  onClick={() => { setPaymentMethod('card'); setValidationError(''); }}
-                  style={{
-                    flex: 1, padding: '10px', borderRadius: '12px',
-                    border: paymentMethod === 'card' ? '2px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
-                    background: paymentMethod === 'card' ? 'rgba(99,102,241,0.12)' : 'var(--bg-surface)',
-                    color: paymentMethod === 'card' ? 'var(--accent-primary)' : 'var(--text-secondary)',
-                    fontWeight: 700, fontSize: '0.85rem', cursor: 'pointer'
-                  }}
-                >
-                  💳 Credit / Debit Card
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setPaymentMethod('bkash'); setValidationError(''); }}
-                  style={{
-                    flex: 1, padding: '10px', borderRadius: '12px',
-                    border: paymentMethod === 'bkash' ? '2px solid #e2136e' : '1px solid var(--border-subtle)',
-                    background: paymentMethod === 'bkash' ? 'rgba(226,19,110,0.12)' : 'var(--bg-surface)',
-                    color: paymentMethod === 'bkash' ? '#e2136e' : 'var(--text-secondary)',
-                    fontWeight: 700, fontSize: '0.85rem', cursor: 'pointer'
-                  }}
-                >
-                  📱 bKash / Nagad MFS
-                </button>
-              </div>
-
-              {validationError && (
-                <div style={{
-                  background: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.4)',
-                  color: '#fca5a5', padding: '10px 14px', borderRadius: '12px', fontSize: '0.82rem',
-                  marginBottom: '14px', textAlign: 'center'
-                }}>
-                  {validationError}
-                </div>
-              )}
-
-              {paymentMethod === 'card' ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '18px' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.76rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', fontWeight: 700 }}>Card Number</label>
-                    <input
-                      type="text"
-                      maxLength={19}
-                      placeholder="4532 0150 0000 0000"
-                      value={cardNumber}
-                      onChange={e => setCardNumber(e.target.value.replace(/\D/g, '').replace(/(.{4})/g, '$1 ').trim())}
-                      required
-                      style={{ width: '100%', padding: '11px 14px', borderRadius: '12px', background: 'var(--bg-input)', border: '1px solid var(--border-strong)', color: '#fff', fontSize: '0.9rem' }}
-                    />
-                  </div>
-                  <div style={{ display: 'flex', gap: '12px' }}>
-                    <div style={{ flex: 1 }}>
-                      <label style={{ display: 'block', fontSize: '0.76rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', fontWeight: 700 }}>Expiry (MM/YY)</label>
-                      <input
-                        type="text"
-                        maxLength={5}
-                        placeholder="12/28"
-                        value={cardExpiry}
-                        onChange={e => {
-                          let v = e.target.value.replace(/\D/g, '');
-                          if (v.length > 2) v = v.substring(0, 2) + '/' + v.substring(2, 4);
-                          setCardExpiry(v);
-                        }}
-                        required
-                        style={{ width: '100%', padding: '11px 14px', borderRadius: '12px', background: 'var(--bg-input)', border: '1px solid var(--border-strong)', color: '#fff', fontSize: '0.9rem' }}
-                      />
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <label style={{ display: 'block', fontSize: '0.76rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', fontWeight: 700 }}>CVV / CVC</label>
-                      <input
-                        type="password"
-                        maxLength={4}
-                        placeholder="892"
-                        value={cardCvc}
-                        onChange={e => setCardCvc(e.target.value.replace(/\D/g, ''))}
-                        required
-                        style={{ width: '100%', padding: '11px 14px', borderRadius: '12px', background: 'var(--bg-input)', border: '1px solid var(--border-strong)', color: '#fff', fontSize: '0.9rem' }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div style={{ background: 'rgba(226,19,110,0.06)', border: '1px solid rgba(226,19,110,0.25)', borderRadius: '14px', padding: '16px', marginBottom: '18px' }}>
-                  <div style={{ fontSize: '0.82rem', color: '#e2136e', fontWeight: 700, marginBottom: '6px' }}>
-                    bKash / Nagad Send Money: <strong>01711-234567</strong>
-                  </div>
-                  <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', margin: '0 0 12px 0' }}>
-                    Send {selectedPlan === 'lifetime' ? '৳4,999' : '৳999'} to the merchant number above, then enter your details:
-                  </p>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    <input
-                      type="text"
-                      placeholder="Your 11-digit Sender Mobile (01xxxxxxxxx)"
-                      value={phone}
-                      onChange={e => setPhone(e.target.value)}
-                      required
-                      style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-strong)', color: '#fff', fontSize: '0.85rem' }}
-                    />
-                    <input
-                      type="text"
-                      placeholder="Transaction ID (TrxID e.g. 9J28XKL90)"
-                      value={trxId}
-                      onChange={e => setTrxId(e.target.value.toUpperCase())}
-                      required
-                      style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', background: 'var(--bg-input)', border: '1px solid var(--border-strong)', color: '#fff', fontSize: '0.85rem' }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={processing}
-                className="btn btn-primary"
-                style={{ width: '100%', padding: '13px', fontSize: '0.95rem', fontWeight: 800, borderRadius: '16px' }}
-              >
-                {processing ? 'Verifying Credentials...' : `Proceed to Secure Checkout (${selectedPlan === 'lifetime' ? '$49.99' : '$9.99'})`}
-              </button>
-            </form>
-          </>
         )}
       </div>
     </div>

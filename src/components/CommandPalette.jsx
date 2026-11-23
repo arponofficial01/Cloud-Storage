@@ -5,17 +5,13 @@ import {
   Search,
   Upload,
   FolderPlus,
-  PieChart,
   Activity,
   Sun,
   Moon,
   HardDrive,
-  Star,
-  Trash2,
   X,
   File,
-  ChevronRight,
-  Archive
+  ChevronRight
 } from 'lucide-react';
 
 export function CommandPalette() {
@@ -25,10 +21,8 @@ export function CommandPalette() {
     files,
     folders,
     navigateToFolder,
-    setActiveCategory,
     setIsUploadOpen,
     setIsNewFolderOpen,
-    setIsAnalyticsOpen,
     setIsActivityLogOpen,
     setActivePreview
   } = useStorage();
@@ -51,71 +45,85 @@ export function CommandPalette() {
       <div
         className="modal-content"
         onClick={(e) => e.stopPropagation()}
-        style={{ maxWidth: '640px', borderRadius: 'var(--radius-lg)', overflow: 'hidden', padding: 0 }}
+        style={{
+          maxWidth: '560px',
+          width: '92vw',
+          borderRadius: '9px',
+          overflow: 'hidden',
+          padding: 0,
+          background: 'var(--bg-modal)',
+          border: '1px solid var(--border-subtle)',
+          boxShadow: '0 20px 50px rgba(0, 0, 0, 0.5)'
+        }}
       >
         {/* Command Search Input */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
-          gap: '12px',
-          padding: '16px 20px',
+          gap: '10px',
+          padding: '12px 16px',
           borderBottom: '1px solid var(--border-subtle)',
-          background: 'var(--bg-input)'
+          background: 'var(--bg-surface)'
         }}>
-          <Search size={22} color="var(--accent-primary)" />
+          <Search size={16} color="var(--text-muted)" />
           <input
             type="text"
             className="input-text"
-            placeholder="Type a command or search files & folders..."
+            placeholder="Type a command or search vault..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             autoFocus
             style={{
               border: 'none',
               background: 'transparent',
-              fontSize: '1.05rem',
+              fontSize: '0.88rem',
               outline: 'none',
-              padding: 0
+              padding: 0,
+              boxShadow: 'none'
             }}
           />
-          <button className="btn btn-ghost btn-icon" onClick={() => setIsCommandPaletteOpen(false)}>
-            <X size={18} />
+          <button
+            className="btn btn-ghost btn-icon"
+            onClick={() => setIsCommandPaletteOpen(false)}
+            style={{ padding: '2px', height: '24px', width: '24px' }}
+          >
+            <X size={15} />
           </button>
         </div>
 
         {/* Results Body */}
-        <div style={{ maxHeight: '380px', overflowY: 'auto', padding: '12px 16px' }}>
-          {/* Quick Actions Header */}
-          <div style={{ fontSize: '0.75rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        <div style={{ maxHeight: '340px', overflowY: 'auto', padding: '10px' }}>
+          <div style={{
+            fontSize: '0.68rem',
+            fontWeight: '600',
+            color: 'var(--text-muted)',
+            padding: '4px 8px 6px 8px',
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em'
+          }}>
             QUICK ACTIONS
           </div>
 
           <CommandItem
-            icon={<Upload size={18} color="var(--accent-primary)" />}
-            title="Upload Files to Vault"
+            icon={<Upload size={14} color="var(--accent-primary)" />}
+            title="Upload Files"
             category="Action"
             onClick={() => handleRunAction(() => setIsUploadOpen(true))}
           />
           <CommandItem
-            icon={<FolderPlus size={18} color="var(--accent-cyan)" />}
+            icon={<FolderPlus size={14} color="var(--accent-primary)" />}
             title="Create New Folder"
             category="Action"
             onClick={() => handleRunAction(() => setIsNewFolderOpen(true))}
           />
           <CommandItem
-            icon={<PieChart size={18} color="var(--accent-emerald)" />}
-            title="Open Storage Analytics"
-            category="View"
-            onClick={() => handleRunAction(() => setIsAnalyticsOpen(true))}
-          />
-          <CommandItem
-            icon={<Activity size={18} color="var(--accent-amber)" />}
-            title="Open Activity & Audit Log"
+            icon={<Activity size={14} color="var(--text-secondary)" />}
+            title="Open Activity Log"
             category="Drawer"
             onClick={() => handleRunAction(() => setIsActivityLogOpen(true))}
           />
           <CommandItem
-            icon={theme === 'dark' ? <Sun size={18} color="#f59e0b" /> : <Moon size={18} color="#6366f1" />}
+            icon={theme === 'dark' ? <Sun size={14} color="var(--accent-amber)" /> : <Moon size={14} color="var(--accent-primary)" />}
             title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
             category="Theme"
             onClick={() => handleRunAction(() => changeTheme(theme === 'dark' ? 'light' : 'dark'))}
@@ -124,15 +132,23 @@ export function CommandPalette() {
           {/* Folders Search */}
           {filteredFolders.length > 0 && (
             <>
-              <div style={{ fontSize: '0.75rem', fontWeight: '700', color: 'var(--text-muted)', margin: '14px 0 8px 0', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              <div style={{
+                fontSize: '0.68rem',
+                fontWeight: '600',
+                color: 'var(--text-muted)',
+                margin: '10px 0 4px 0',
+                padding: '4px 8px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.04em'
+              }}>
                 FOLDERS ({filteredFolders.length})
               </div>
               {filteredFolders.map(folder => (
                 <CommandItem
                   key={folder.id}
-                  icon={<HardDrive size={18} color={folder.color || '#6366f1'} />}
+                  icon={<HardDrive size={14} color={folder.color || 'var(--accent-primary)'} />}
                   title={folder.name}
-                  category="Folder Jump"
+                  category="Folder"
                   onClick={() => handleRunAction(() => navigateToFolder(folder.id, folder.name))}
                 />
               ))}
@@ -142,13 +158,21 @@ export function CommandPalette() {
           {/* Files Search */}
           {filteredFiles.length > 0 && (
             <>
-              <div style={{ fontSize: '0.75rem', fontWeight: '700', color: 'var(--text-muted)', margin: '14px 0 8px 0', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              <div style={{
+                fontSize: '0.68rem',
+                fontWeight: '600',
+                color: 'var(--text-muted)',
+                margin: '10px 0 4px 0',
+                padding: '4px 8px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.04em'
+              }}>
                 FILES ({filteredFiles.length})
               </div>
               {filteredFiles.map(file => (
                 <CommandItem
                   key={file.id}
-                  icon={<File size={18} color="var(--text-secondary)" />}
+                  icon={<File size={14} color="var(--text-secondary)" />}
                   title={file.name}
                   category={file.category}
                   onClick={() => handleRunAction(() => setActivePreview(file))}
@@ -160,16 +184,17 @@ export function CommandPalette() {
 
         {/* Footer Hint */}
         <div style={{
-          padding: '10px 16px',
+          padding: '8px 14px',
           background: 'var(--bg-secondary)',
           borderTop: '1px solid var(--border-subtle)',
           display: 'flex',
-          justify: 'space-between',
-          fontSize: '0.75rem',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          fontSize: '0.72rem',
           color: 'var(--text-muted)'
         }}>
-          <span>Press <kbd style={{ background: 'var(--bg-input)', padding: '2px 6px', borderRadius: '4px', border: '1px solid var(--border-subtle)' }}>ESC</kbd> to close</span>
-          <span>Storage Bank Command Engine</span>
+          <span>Press <kbd style={{ background: 'var(--bg-input)', padding: '1px 5px', borderRadius: '4px', border: '1px solid var(--border-subtle)' }}>ESC</kbd> to exit</span>
+          <span>StorageBank Quick Action</span>
         </div>
       </div>
     </div>
@@ -184,22 +209,37 @@ function CommandItem({ icon, title, category, onClick }) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '10px 14px',
-        borderRadius: 'var(--radius-md)',
+        padding: '7px 10px',
+        borderRadius: '6px',
         cursor: 'pointer',
-        transition: 'var(--transition-fast)',
-        marginBottom: '4px'
+        transition: 'all 0.12s ease',
+        marginBottom: '2px'
       }}
-      onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-surface-hover)'}
-      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = 'var(--bg-surface-hover)';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = 'transparent';
+      }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
         {icon}
-        <span style={{ fontSize: '0.9rem', fontWeight: '600', color: 'var(--text-primary)' }}>{title}</span>
+        <span style={{ fontSize: '0.82rem', fontWeight: '500', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {title}
+        </span>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-        <span className="badge badge-indigo" style={{ fontSize: '0.7rem' }}>{category}</span>
-        <ChevronRight size={14} color="var(--text-muted)" />
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+        <span style={{
+          fontSize: '0.68rem',
+          color: 'var(--text-muted)',
+          background: 'var(--bg-input)',
+          padding: '1px 6px',
+          borderRadius: '4px',
+          border: '1px solid var(--border-subtle)'
+        }}>
+          {category}
+        </span>
+        <ChevronRight size={13} color="var(--text-muted)" />
       </div>
     </div>
   );

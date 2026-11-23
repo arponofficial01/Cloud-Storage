@@ -1,22 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, lazy, Suspense } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { StorageProvider, useStorage } from './context/StorageContext';
 
-import { ParticleCanvas } from './components/ParticleCanvas';
 import { Sidebar } from './components/Sidebar';
 import { Navbar } from './components/Navbar';
 import { Breadcrumbs } from './components/Breadcrumbs';
-import { VaultHeroBanner } from './components/VaultHeroBanner';
 import { FileGrid } from './components/FileGrid';
 import { FileList } from './components/FileList';
-import { ConverterStudioPage } from './components/ConverterStudioPage';
 import { AuthLandingPage } from './components/AuthLandingPage';
-import { ProfilePage } from './components/ProfilePage';
 
 import { UploadModal } from './components/UploadModal';
 import { NewFolderModal } from './components/NewFolderModal';
 import { FilePreviewModal } from './components/FilePreviewModal';
-import { StorageAnalyticsModal } from './components/StorageAnalyticsModal';
 import { ShareModal } from './components/ShareModal';
 import { AuthModal } from './components/AuthModal';
 
@@ -28,15 +23,20 @@ import { VaultPasscodeModal } from './components/VaultPasscodeModal';
 import { AiCopilotDrawer } from './components/AiCopilotDrawer';
 
 import { ToastContainer } from './components/Toast';
-import { UploadProgressBar } from './components/UploadProgressBar';
-
-import { SubscriptionModal } from './components/SubscriptionModal';
-import { MusicStudioModal } from './components/MusicStudioModal';
-import { SharedFilePage } from './components/SharedFilePage';
 import { MoveToFolderModal } from './components/MoveToFolderModal';
-import { WindowsDriveModal } from './components/WindowsDriveModal';
+import { ConfirmDialogModal } from './components/ConfirmDialogModal';
+import { MobileBottomBar } from './components/MobileBottomBar';
 
-import { UploadCloud, Command, Loader2, Folder, Sliders, User } from 'lucide-react';
+import { UploadCloud, Loader2 } from 'lucide-react';
+
+// Lazy-loaded heavy modules and studios
+const ConverterStudioPage = lazy(() => import('./components/ConverterStudioPage').then(m => ({ default: m.ConverterStudioPage })));
+const ProfilePage = lazy(() => import('./components/ProfilePage').then(m => ({ default: m.ProfilePage })));
+const AdminPanelPage = lazy(() => import('./components/AdminPanelPage').then(m => ({ default: m.AdminPanelPage })));
+const SharedFilePage = lazy(() => import('./components/SharedFilePage').then(m => ({ default: m.SharedFilePage })));
+const StorageAnalyticsModal = lazy(() => import('./components/StorageAnalyticsModal').then(m => ({ default: m.StorageAnalyticsModal })));
+const SubscriptionModal = lazy(() => import('./components/SubscriptionModal').then(m => ({ default: m.SubscriptionModal })));
+const WindowsDriveModal = lazy(() => import('./components/WindowsDriveModal').then(m => ({ default: m.WindowsDriveModal })));
 
 function AppContent() {
   const { user, authLoading } = useAuth();
@@ -45,24 +45,24 @@ function AppContent() {
   const shareId = params.get('share');
   const sharePass = params.get('pass');
 
-  if (shareId) {
-    return <SharedFilePage sharedFileId={shareId} requiredPasscode={sharePass} />;
-  }
   const {
     activeCategory,
-    setActiveCategory,
     viewMode,
     uploadFiles,
-    setIsUploadOpen,
     isSubscriptionOpen,
     setIsSubscriptionOpen,
-    isMusicStudioOpen,
-    setIsMusicStudioOpen,
     currentMusicTrack,
     isMusicPlaying,
     setIsMusicPlaying,
     isMusicMuted,
-    isMusicLooping
+    isMusicLooping,
+    selectedItems,
+    selectAllDisplayedItems,
+    clearSelection,
+    batchMoveToTrash,
+    batchDeletePermanently,
+    setIsCommandPaletteOpen,
+    activePreview
   } = useStorage();
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -70,6 +70,49 @@ function AppContent() {
   const [isAiCopilotOpen, setIsAiCopilotOpen] = useState(false);
 
   const globalAudioRef = React.useRef(null);
+
+  // Global Desktop Keyboard Shortcuts (Ctrl+K, Ctrl+A, Delete, Escape)
+  React.useEffect(() => {
+    const handleGlobalKeyDown = (e) => {
+      const tag = (e.target?.tagName || '').toUpperCase();
+      const isEditable = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target?.isContentEditable;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsCommandPaletteOpen(prev => !prev);
+        return;
+      }
+
+      if (isEditable || activePreview) return;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+        if (activeCategory !== 'profile' && activeCategory !== 'converter') {
+          e.preventDefault();
+          selectAllDisplayedItems();
+        }
+      } else if (e.key === 'Delete' && selectedItems.length > 0) {
+        e.preventDefault();
+        if (activeCategory === 'trash') {
+          batchDeletePermanently();
+        } else {
+          batchMoveToTrash();
+        }
+      } else if (e.key === 'Escape' && selectedItems.length > 0) {
+        clearSelection();
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [
+    activeCategory,
+    activePreview,
+    selectedItems,
+    selectAllDisplayedItems,
+    clearSelection,
+    batchMoveToTrash,
+    batchDeletePermanently,
+    setIsCommandPaletteOpen
+  ]);
 
   // Sync background music playback globally across all views & page reloads
   React.useEffect(() => {
@@ -136,6 +179,14 @@ function AppContent() {
   };
 
   const renderMainContent = () => {
+    if (shareId) {
+      return (
+        <Suspense fallback={<div className="loading-spinner"><Loader2 size={36} className="spin" /></div>}>
+          <SharedFilePage sharedFileId={shareId} requiredPasscode={sharePass} />
+        </Suspense>
+      );
+    }
+
     // Show spinner while Supabase restores session from localStorage
     if (authLoading) {
       return (
@@ -165,10 +216,6 @@ function AppContent() {
         {/* Master PIN Passcode Lock Screen Modal */}
         <VaultPasscodeModal />
 
-        {/* Interactive Floating Particle Canvas */}
-        <ParticleCanvas />
-
-
       {/* Full Window Drop Overlay */}
       {isWindowDragActive && (
         <div style={{
@@ -192,7 +239,7 @@ function AppContent() {
             Drop files anywhere to upload instantly
           </h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '1.05rem', marginTop: '6px' }}>
-            Your files will be saved directly into your local IndexedDB vault
+            Your files will be encrypted and stored directly in your cloud vault
           </p>
         </div>
       )}
@@ -241,7 +288,6 @@ function AppContent() {
             }
           }}
           onOpenAiCopilot={() => setIsAiCopilotOpen(true)}
-          onOpenMusicStudio={() => setIsMusicStudioOpen(true)}
           onOpenSubscription={() => setIsSubscriptionOpen(true)}
         />
 
@@ -252,93 +298,21 @@ function AppContent() {
           overflowY: 'auto',
           position: 'relative'
         }}>
-          {activeCategory === 'converter' ? (
-            <ConverterStudioPage />
-          ) : activeCategory === 'profile' ? (
-            <ProfilePage />
-          ) : (
-            <>
-              <VaultHeroBanner />
-              <Breadcrumbs />
-              {viewMode === 'grid' ? <FileGrid /> : <FileList />}
-            </>
-          )}
+          <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px' }}><Loader2 size={32} color="var(--accent-primary)" style={{ animation: 'spin 1s linear infinite' }} /></div>}>
+            {activeCategory === 'converter' ? (
+              <ConverterStudioPage />
+            ) : activeCategory === 'profile' ? (
+              <ProfilePage />
+            ) : activeCategory === 'admin' ? (
+              <AdminPanelPage />
+            ) : (
+              <>
+                <Breadcrumbs />
+                {viewMode === 'grid' ? <FileGrid /> : <FileList />}
+              </>
+            )}
+          </Suspense>
         </main>
-
-        {/* Mobile Floating Bottom Dock for Smartphone Thumbs */}
-        <div className="mobile-bottom-dock">
-          <button
-            className={`mobile-dock-item ${activeCategory === 'all' ? 'active' : ''}`}
-            onClick={() => setActiveCategory('all')}
-          >
-            <Folder size={20} />
-            <span>Vault</span>
-          </button>
-
-          <button
-            className={`mobile-dock-item ${activeCategory === 'edited' ? 'active' : ''}`}
-            onClick={() => setActiveCategory('edited')}
-          >
-            <Sliders size={20} color="var(--accent-amber)" />
-            <span>Edited</span>
-          </button>
-
-          <button
-            className="mobile-dock-item"
-            onClick={() => setIsUploadOpen(true)}
-            style={{ color: 'var(--accent-primary)' }}
-          >
-            <div style={{
-              width: '38px', height: '38px', borderRadius: '50%',
-              background: 'var(--accent-gradient)', display: 'flex',
-              alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 15px var(--accent-glow)'
-            }}>
-              <UploadCloud size={20} color="#ffffff" />
-            </div>
-          </button>
-
-          <button
-            className={`mobile-dock-item ${activeCategory === 'converter' ? 'active' : ''}`}
-            onClick={() => setActiveCategory('converter')}
-          >
-            <Command size={20} color="var(--accent-cyan)" />
-            <span>Convert</span>
-          </button>
-
-          <button
-            className={`mobile-dock-item ${activeCategory === 'profile' ? 'active' : ''}`}
-            onClick={() => setActiveCategory('profile')}
-          >
-            <User size={20} />
-            <span>Profile</span>
-          </button>
-        </div>
-
-        {/* Raycast Style Keyboard Shortcut Helper Pill */}
-        <div style={{
-          position: 'absolute',
-          bottom: '16px',
-          right: '24px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '12px',
-          background: 'rgba(15, 23, 42, 0.85)',
-          backdropFilter: 'blur(10px)',
-          padding: '4px 12px',
-          borderRadius: 'var(--radius-full)',
-          border: '1px solid var(--border-subtle)',
-          fontSize: '0.72rem',
-          color: 'var(--text-muted)',
-          zIndex: 50
-        }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <Command size={10} /> <strong>Ctrl+K</strong> Commands
-          </span>
-          <span>•</span>
-          <span><strong>Single-Click</strong> Open</span>
-          <span>•</span>
-          <span><strong>DB</strong> Local Engine</span>
-        </div>
       </div>
 
       {/* Ultra-Premium Floating Modules & Modals */}
@@ -346,21 +320,24 @@ function AppContent() {
       <ActivityLogDrawer />
       <MediaPlayerBar />
       <BatchActionBar />
+      <MobileBottomBar onOpenAiCopilot={() => setIsAiCopilotOpen(true)} />
       <AiCopilotDrawer isOpen={isAiCopilotOpen} onClose={() => setIsAiCopilotOpen(false)} />
 
       {/* Core Modals */}
       <UploadModal />
       <NewFolderModal />
       <FilePreviewModal />
-      <StorageAnalyticsModal />
       <ShareModal />
       <AuthModal />
-      <SubscriptionModal isOpen={isSubscriptionOpen} onClose={() => setIsSubscriptionOpen(false)} />
-      <MusicStudioModal isOpen={isMusicStudioOpen} onClose={() => setIsMusicStudioOpen(false)} />
+      {/* Lazy Loaded Studio & Utility Modals */}
+      <Suspense fallback={null}>
+        <StorageAnalyticsModal />
+        {isSubscriptionOpen && <SubscriptionModal isOpen={isSubscriptionOpen} onClose={() => setIsSubscriptionOpen(false)} />}
+        <WindowsDriveModal />
+      </Suspense>
       <MoveToFolderModal isOpen={Boolean(moveModalTarget)} onClose={() => setMoveModalTarget(null)} targetItemIds={moveModalTarget} />
-      <WindowsDriveModal />
+      <ConfirmDialogModal />
       <ToastContainer />
-      <UploadProgressBar />
     </div>
     );
   };

@@ -1,7 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { useStorage } from '../context/StorageContext';
 import { RenameModal } from './RenameModal';
-import { MediaEditorModal } from './MediaEditorModal';
+import { ItemMenu } from './ItemMenu';
+
+const MediaEditorModal = lazy(() => import('./MediaEditorModal').then(m => ({ default: m.MediaEditorModal })));
+const DocumentEditorModal = lazy(() => import('./DocumentEditorModal').then(m => ({ default: m.DocumentEditorModal })));
 import {
   Folder,
   FileText,
@@ -12,16 +15,10 @@ import {
   Archive,
   File,
   Star,
-  Download,
-  Share2,
-  Trash2,
-  RotateCcw,
-  Edit3,
   Eye,
   ArrowUpDown,
   Check,
-  RefreshCw,
-  Sliders
+  MoreVertical
 } from 'lucide-react';
 
 export function FileList() {
@@ -30,23 +27,60 @@ export function FileList() {
     displayedFiles,
     navigateToFolder,
     toggleStar,
-    moveToTrash,
-    restoreFromTrash,
-    deletePermanently,
     setActivePreview,
     setActiveShare,
-    setActiveCategory,
     sortBy,
     setSortBy,
-    sortOrder,
     setSortOrder,
     selectedItems,
-    toggleSelectItem
+    toggleSelectItem,
+    moveItemsToFolder,
+    uploadFiles,
+    addToast,
+    downloadFile
   } = useStorage();
 
+  const [activeMenuId, setActiveMenuId] = useState(null);
   const [renameTarget, setRenameTarget] = useState(null);
   const [editorTarget, setEditorTarget] = useState(null);
+  const [docEditorTarget, setDocEditorTarget] = useState(null);
   const [visibleCount, setVisibleCount] = useState(60);
+  const [dragOverFolderId, setDragOverFolderId] = useState(null);
+
+  const handleDragStart = (e, item) => {
+    const dragIds = selectedItems.includes(item.id) ? selectedItems : [item.id];
+    e.dataTransfer.setData('application/json', JSON.stringify({ type: 'vault-items', itemIds: dragIds }));
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleFolderDrop = async (e, folder) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverFolderId(null);
+    if (folder.inTrash) return;
+
+    const raw = e.dataTransfer.getData('application/json');
+    if (raw) {
+      try {
+        const data = JSON.parse(raw);
+        if (data.type === 'vault-items' && Array.isArray(data.itemIds)) {
+          const moveIds = data.itemIds.filter(id => id !== folder.id);
+          if (moveIds.length > 0) {
+            await moveItemsToFolder(moveIds, folder.id);
+            addToast(`Moved ${moveIds.length} item(s) to "${folder.name}"`, 'success');
+          }
+          return;
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      await uploadFiles(e.dataTransfer.files, folder.id);
+      addToast(`Uploaded ${e.dataTransfer.files.length} file(s) into "${folder.name}"`, 'success');
+    }
+  };
 
   useEffect(() => {
     setVisibleCount(60);
@@ -61,13 +95,16 @@ export function FileList() {
   };
 
   const handleDownload = (file) => {
-    if (!file.blob) return;
-    const url = URL.createObjectURL(file.blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = file.name;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (downloadFile) {
+      downloadFile(file);
+    } else if (file?.blob) {
+      const url = URL.createObjectURL(file.blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
   };
 
   const handleHeaderSort = (field) => {
@@ -80,15 +117,15 @@ export function FileList() {
   };
 
   const getItemIcon = (item, isFolder) => {
-    if (isFolder) return <Folder size={18} fill={item.color || '#6366f1'} color={item.color || '#6366f1'} />;
+    if (isFolder) return <Folder size={17} fill={item.color || 'var(--accent-primary)'} color={item.color || 'var(--accent-primary)'} />;
     switch (item.category) {
-      case 'image': return <ImageIcon size={18} color="#06b6d4" />;
-      case 'video': return <Video size={18} color="#ec4899" />;
-      case 'audio': return <Music size={18} color="#f59e0b" />;
-      case 'document': return <FileText size={18} color="#10b981" />;
-      case 'code': return <Code2 size={18} color="#8b5cf6" />;
-      case 'archive': return <Archive size={18} color="#6366f1" />;
-      default: return <File size={18} color="#94a3b8" />;
+      case 'image': return <ImageIcon size={17} color="var(--accent-primary)" />;
+      case 'video': return <Video size={17} color="var(--accent-rose)" />;
+      case 'audio': return <Music size={17} color="var(--accent-amber)" />;
+      case 'document': return <FileText size={17} color="var(--accent-emerald)" />;
+      case 'code': return <Code2 size={17} color="var(--accent-secondary)" />;
+      case 'archive': return <Archive size={17} color="var(--accent-primary)" />;
+      default: return <File size={17} color="var(--text-muted)" />;
     }
   };
 
@@ -97,56 +134,73 @@ export function FileList() {
 
   return (
     <>
-      <div className="glass-panel" style={{ borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.85rem' }}>
+      <div style={{
+        background: 'var(--bg-surface)',
+        borderRadius: '9px',
+        border: '1px solid var(--border-subtle)',
+        overflowX: 'auto',
+        overflowY: 'visible'
+      }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.82rem' }}>
           <thead>
             <tr style={{ background: 'var(--bg-input)', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-muted)' }}>
-              <th style={{ padding: '12px 16px', width: '40px' }}></th>
-              <th style={{ padding: '12px 16px', cursor: 'pointer' }} onClick={() => handleHeaderSort('name')}>
+              <th style={{ padding: '9px 12px', width: '38px' }}></th>
+              <th style={{ padding: '9px 12px', cursor: 'pointer', fontWeight: 600 }} onClick={() => handleHeaderSort('name')}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <span>Name</span>
-                  <ArrowUpDown size={12} />
+                  <ArrowUpDown size={11} />
                 </div>
               </th>
-              <th style={{ padding: '12px 16px', cursor: 'pointer' }} onClick={() => handleHeaderSort('category')}>
+              <th className="desktop-only" style={{ padding: '9px 12px', cursor: 'pointer', fontWeight: 600 }} onClick={() => handleHeaderSort('category')}>
                 <span>Type</span>
               </th>
-              <th style={{ padding: '12px 16px', cursor: 'pointer' }} onClick={() => handleHeaderSort('size')}>
+              <th style={{ padding: '9px 12px', cursor: 'pointer', fontWeight: 600 }} onClick={() => handleHeaderSort('size')}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <span>Size</span>
-                  <ArrowUpDown size={12} />
+                  <ArrowUpDown size={11} />
                 </div>
               </th>
-              <th style={{ padding: '12px 16px', cursor: 'pointer' }} onClick={() => handleHeaderSort('date')}>
+              <th className="desktop-only" style={{ padding: '9px 12px', cursor: 'pointer', fontWeight: 600 }} onClick={() => handleHeaderSort('date')}>
                 <span>Date Modified</span>
               </th>
-              <th style={{ padding: '12px 16px', textAlign: 'right' }}>Actions</th>
+              <th style={{ padding: '9px 12px', textAlign: 'right', width: '110px', fontWeight: 600 }}>Actions</th>
             </tr>
           </thead>
           <tbody>
             {/* Folders */}
             {displayedFolders.map(folder => {
               const isSelected = selectedItems.includes(folder.id);
+              const isDragTarget = dragOverFolderId === folder.id;
               return (
                 <tr
                   key={folder.id}
-                  onClick={() => !folder.inTrash && navigateToFolder(folder.id, folder.name)}
-                  onDoubleClick={() => !folder.inTrash && navigateToFolder(folder.id, folder.name)}
+                  onClick={() => navigateToFolder(folder.id, folder.name)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setActiveMenuId(folder.id);
+                  }}
+                  draggable={!folder.inTrash}
+                  onDragStart={(e) => handleDragStart(e, folder)}
+                  onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverFolderId(folder.id); }}
+                  onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverFolderId(null); }}
+                  onDrop={(e) => handleFolderDrop(e, folder)}
                   style={{
                     borderBottom: '1px solid var(--border-subtle)',
                     cursor: 'pointer',
-                    background: isSelected ? 'rgba(99, 102, 241, 0.12)' : 'transparent',
-                    transition: 'var(--transition-fast)'
+                    background: isDragTarget ? 'rgba(16, 185, 129, 0.16)' : isSelected ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
+                    outline: isDragTarget ? '1px dashed var(--accent-emerald)' : 'none',
+                    transition: 'background-color 0.12s ease'
                   }}
                 >
-                  <td style={{ padding: '12px 16px' }}>
+                  <td style={{ padding: '9px 12px' }}>
                     <div
                       onClick={(e) => { e.stopPropagation(); toggleSelectItem(folder.id); }}
                       style={{
-                        width: '18px',
-                        height: '18px',
-                        borderRadius: '50%',
-                        border: isSelected ? '2px solid var(--accent-primary)' : '2px solid var(--border-subtle)',
+                        width: '16px',
+                        height: '16px',
+                        borderRadius: '4px',
+                        border: isSelected ? '1px solid var(--accent-primary)' : '1px solid var(--border-strong)',
                         background: isSelected ? 'var(--accent-primary)' : 'transparent',
                         display: 'flex',
                         alignItems: 'center',
@@ -157,42 +211,43 @@ export function FileList() {
                       {isSelected && <Check size={10} color="#ffffff" />}
                     </div>
                   </td>
-                  <td style={{ padding: '12px 16px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <td style={{ padding: '9px 12px', fontWeight: '600', color: 'var(--text-primary)', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       {getItemIcon(folder, true)}
-                      <span>{folder.name}</span>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{folder.name}</span>
                     </div>
                   </td>
-                  <td style={{ padding: '12px 16px', color: 'var(--text-muted)' }}>Folder</td>
-                  <td style={{ padding: '12px 16px', color: 'var(--text-muted)' }}>--</td>
-                  <td style={{ padding: '12px 16px', color: 'var(--text-muted)' }}>{new Date(folder.createdAt).toLocaleDateString()}</td>
-                  <td style={{ padding: '12px 16px', textAlign: 'right' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px' }}>
-                      {!folder.inTrash ? (
-                        <>
-                          <button
-                            className="btn btn-primary"
-                            title="Open Folder"
-                            onClick={(e) => { e.stopPropagation(); navigateToFolder(folder.id, folder.name); }}
-                            style={{ padding: '4px 10px', fontSize: '0.75rem', fontWeight: 700, borderRadius: '8px', gap: '4px' }}
-                          >
-                            <Folder size={12} /> Open
-                          </button>
-                          <button className="btn btn-ghost btn-icon" title="Star Folder" onClick={(e) => { e.stopPropagation(); toggleStar(folder.id, true); }}>
-                            <Star size={14} fill={folder.starred ? '#f59e0b' : 'none'} color={folder.starred ? '#f59e0b' : 'var(--text-muted)'} />
-                          </button>
-                          <button className="btn btn-ghost btn-icon" title="Rename" onClick={(e) => { e.stopPropagation(); setRenameTarget({ item: folder, isFolder: true }); }}>
-                            <Edit3 size={14} />
-                          </button>
-                          <button className="btn btn-ghost btn-icon" title="Move to Trash" onClick={(e) => { e.stopPropagation(); moveToTrash(folder.id, true); }}>
-                            <Trash2 size={14} color="var(--accent-rose)" />
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button className="btn btn-ghost btn-icon" title="Restore" onClick={(e) => { e.stopPropagation(); restoreFromTrash(folder.id, true); }}><RotateCcw size={14} /></button>
-                          <button className="btn btn-ghost btn-icon" title="Delete" onClick={(e) => { e.stopPropagation(); deletePermanently(folder.id, true); }}><Trash2 size={14} color="var(--accent-rose)" /></button>
-                        </>
+                  <td className="desktop-only" style={{ padding: '9px 12px', color: 'var(--text-muted)' }}>Folder</td>
+                  <td style={{ padding: '9px 12px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>--</td>
+                  <td className="desktop-only" style={{ padding: '9px 12px', color: 'var(--text-muted)' }}>{new Date(folder.createdAt).toLocaleDateString()}</td>
+                  <td style={{ padding: '9px 12px', textAlign: 'right' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '4px', position: 'relative' }}>
+                      <button
+                        className="btn btn-ghost btn-icon"
+                        title={folder.starred ? 'Starred' : 'Add to Starred'}
+                        onClick={(e) => { e.stopPropagation(); toggleStar(folder.id, true); }}
+                        style={{ padding: '4px', height: '26px', width: '26px' }}
+                      >
+                        <Star size={13} fill={folder.starred ? '#f59e0b' : 'none'} color={folder.starred ? '#f59e0b' : 'var(--text-muted)'} />
+                      </button>
+
+                      <button
+                        className="btn btn-ghost btn-icon"
+                        title="More options"
+                        onClick={(e) => { e.stopPropagation(); setActiveMenuId(activeMenuId === folder.id ? null : folder.id); }}
+                        style={{ padding: '4px', height: '26px', width: '26px' }}
+                      >
+                        <MoreVertical size={13} color="var(--text-muted)" />
+                      </button>
+
+                      {activeMenuId === folder.id && (
+                        <ItemMenu
+                          item={folder}
+                          isFolder={true}
+                          onClose={() => setActiveMenuId(null)}
+                          onRename={() => setRenameTarget({ item: folder, isFolder: true })}
+                          onOpenFolder={() => navigateToFolder(folder.id, folder.name)}
+                        />
                       )}
                     </div>
                   </td>
@@ -203,26 +258,32 @@ export function FileList() {
             {/* Files */}
             {filesToRender.map(file => {
               const isSelected = selectedItems.includes(file.id);
-              const isMedia = file.category === 'image' || file.category === 'video';
               return (
                 <tr
                   key={file.id}
-                  onClick={() => !file.inTrash && setActivePreview(file)}
+                  onClick={() => setActivePreview(file)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setActiveMenuId(file.id);
+                  }}
+                  draggable={!file.inTrash}
+                  onDragStart={(e) => handleDragStart(e, file)}
                   style={{
                     borderBottom: '1px solid var(--border-subtle)',
                     cursor: 'pointer',
-                    background: isSelected ? 'rgba(99, 102, 241, 0.12)' : 'transparent',
-                    transition: 'var(--transition-fast)'
+                    background: isSelected ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
+                    transition: 'background-color 0.12s ease'
                   }}
                 >
-                  <td style={{ padding: '12px 16px' }}>
+                  <td style={{ padding: '9px 12px' }}>
                     <div
                       onClick={(e) => { e.stopPropagation(); toggleSelectItem(file.id); }}
                       style={{
-                        width: '18px',
-                        height: '18px',
-                        borderRadius: '50%',
-                        border: isSelected ? '2px solid var(--accent-primary)' : '2px solid var(--border-subtle)',
+                        width: '16px',
+                        height: '16px',
+                        borderRadius: '4px',
+                        border: isSelected ? '1px solid var(--accent-primary)' : '1px solid var(--border-strong)',
                         background: isSelected ? 'var(--accent-primary)' : 'transparent',
                         display: 'flex',
                         alignItems: 'center',
@@ -233,37 +294,56 @@ export function FileList() {
                       {isSelected && <Check size={10} color="#ffffff" />}
                     </div>
                   </td>
-                  <td style={{ padding: '12px 16px', fontWeight: '500', color: 'var(--text-primary)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <td style={{ padding: '9px 12px', fontWeight: '500', color: 'var(--text-primary)', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       {getItemIcon(file, false)}
-                      <span>{file.name}</span>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{file.name}</span>
                     </div>
                   </td>
-                  <td style={{ padding: '12px 16px', color: 'var(--text-muted)', textTransform: 'capitalize' }}>{file.category}</td>
-                  <td style={{ padding: '12px 16px', color: 'var(--text-muted)' }}>{formatSize(file.size)}</td>
-                  <td style={{ padding: '12px 16px', color: 'var(--text-muted)' }}>{new Date(file.createdAt).toLocaleDateString()}</td>
-                  <td style={{ padding: '12px 16px', textAlign: 'right' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '4px' }}>
-                      {!file.inTrash ? (
-                        <>
-                          <button className="btn btn-ghost btn-icon" title="Star File" onClick={(e) => { e.stopPropagation(); toggleStar(file.id, false); }}>
-                            <Star size={14} fill={file.starred ? '#f59e0b' : 'none'} color={file.starred ? '#f59e0b' : 'var(--text-muted)'} />
-                          </button>
-                          <button className="btn btn-ghost btn-icon" title="Preview" onClick={(e) => { e.stopPropagation(); setActivePreview(file); }}><Eye size={14} color="var(--accent-primary)" /></button>
-                          {isMedia && (
-                            <button className="btn btn-ghost btn-icon" title="Pro Media Editor" onClick={(e) => { e.stopPropagation(); setEditorTarget(file); }}><Sliders size={14} color="var(--accent-amber)" /></button>
-                          )}
-                          <button className="btn btn-ghost btn-icon" title="Convert Format Studio" onClick={(e) => { e.stopPropagation(); setActiveCategory('converter'); }}><RefreshCw size={14} color="var(--accent-cyan)" /></button>
-                          <button className="btn btn-ghost btn-icon" title="Download" onClick={(e) => { e.stopPropagation(); handleDownload(file); }}><Download size={14} color="var(--accent-emerald)" /></button>
-                          <button className="btn btn-ghost btn-icon" title="Share Link" onClick={(e) => { e.stopPropagation(); setActiveShare(file); }}><Share2 size={14} color="var(--accent-amber)" /></button>
-                          <button className="btn btn-ghost btn-icon" title="Rename" onClick={(e) => { e.stopPropagation(); setRenameTarget({ item: file, isFolder: false }); }}><Edit3 size={14} /></button>
-                          <button className="btn btn-ghost btn-icon" title="Move to Trash" onClick={(e) => { e.stopPropagation(); moveToTrash(file.id, false); }}><Trash2 size={14} color="var(--accent-rose)" /></button>
-                        </>
-                      ) : (
-                        <>
-                          <button className="btn btn-ghost btn-icon" title="Restore" onClick={(e) => { e.stopPropagation(); restoreFromTrash(file.id, false); }}><RotateCcw size={14} /></button>
-                          <button className="btn btn-ghost btn-icon" title="Delete" onClick={(e) => { e.stopPropagation(); deletePermanently(file.id, false); }}><Trash2 size={14} color="var(--accent-rose)" /></button>
-                        </>
+                  <td className="desktop-only" style={{ padding: '9px 12px', color: 'var(--text-muted)', textTransform: 'capitalize' }}>{file.category}</td>
+                  <td style={{ padding: '9px 12px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{formatSize(file.size)}</td>
+                  <td className="desktop-only" style={{ padding: '9px 12px', color: 'var(--text-muted)' }}>{new Date(file.createdAt).toLocaleDateString()}</td>
+                  <td style={{ padding: '9px 12px', textAlign: 'right' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '4px', position: 'relative' }}>
+                      <button
+                        className="btn btn-ghost btn-icon"
+                        title={file.starred ? 'Starred' : 'Add to Starred'}
+                        onClick={(e) => { e.stopPropagation(); toggleStar(file.id, false); }}
+                        style={{ padding: '4px', height: '26px', width: '26px' }}
+                      >
+                        <Star size={13} fill={file.starred ? '#f59e0b' : 'none'} color={file.starred ? '#f59e0b' : 'var(--text-muted)'} />
+                      </button>
+
+                      <button
+                        className="btn btn-ghost btn-icon"
+                        title="Preview"
+                        onClick={(e) => { e.stopPropagation(); setActivePreview(file); }}
+                        style={{ padding: '4px', height: '26px', width: '26px' }}
+                      >
+                        <Eye size={13} color="var(--text-secondary)" />
+                      </button>
+
+                      <button
+                        className="btn btn-ghost btn-icon"
+                        title="More options"
+                        onClick={(e) => { e.stopPropagation(); setActiveMenuId(activeMenuId === file.id ? null : file.id); }}
+                        style={{ padding: '4px', height: '26px', width: '26px' }}
+                      >
+                        <MoreVertical size={13} color="var(--text-muted)" />
+                      </button>
+
+                      {activeMenuId === file.id && (
+                        <ItemMenu
+                          item={file}
+                          isFolder={false}
+                          onClose={() => setActiveMenuId(null)}
+                          onRename={() => setRenameTarget({ item: file, isFolder: false })}
+                          onPreview={() => setActivePreview(file)}
+                          onDownload={() => handleDownload(file)}
+                          onShare={() => setActiveShare(file)}
+                          onEditMedia={() => setEditorTarget(file)}
+                          onEditDoc={() => setDocEditorTarget(file)}
+                        />
                       )}
                     </div>
                   </td>
@@ -275,11 +355,11 @@ export function FileList() {
       </div>
 
       {hasMore && (
-        <div style={{ display: 'flex', justifyContent: 'center', margin: '24px 0' }}>
+        <div style={{ display: 'flex', justifyContent: 'center', margin: '20px 0' }}>
           <button
             className="btn btn-secondary"
             onClick={() => setVisibleCount(prev => prev + 60)}
-            style={{ padding: '10px 24px', borderRadius: '12px', fontSize: '0.88rem', fontWeight: '700' }}
+            style={{ padding: '8px 20px', borderRadius: '7px', fontSize: '0.82rem', fontWeight: 600 }}
           >
             Load More Files ({displayedFiles.length - visibleCount} remaining)
           </button>
@@ -292,11 +372,25 @@ export function FileList() {
         onClose={() => setRenameTarget(null)}
       />
 
-      <MediaEditorModal
-        file={editorTarget}
-        isOpen={Boolean(editorTarget)}
-        onClose={() => setEditorTarget(null)}
-      />
+      {Boolean(editorTarget) && (
+        <Suspense fallback={null}>
+          <MediaEditorModal
+            file={editorTarget}
+            isOpen={Boolean(editorTarget)}
+            onClose={() => setEditorTarget(null)}
+          />
+        </Suspense>
+      )}
+
+      {Boolean(docEditorTarget) && (
+        <Suspense fallback={null}>
+          <DocumentEditorModal
+            file={docEditorTarget}
+            isOpen={Boolean(docEditorTarget)}
+            onClose={() => setDocEditorTarget(null)}
+          />
+        </Suspense>
+      )}
     </>
   );
 }

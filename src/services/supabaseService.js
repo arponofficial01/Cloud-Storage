@@ -22,6 +22,7 @@ export async function syncFileToSupabase(fileRecord) {
         type:       fileRecord.type,
         category:   fileRecord.category,
         size:       fileRecord.size      || 0,
+        storage_path: fileRecord.storagePath || null,
         starred:    fileRecord.starred   || false,
         in_trash:   fileRecord.inTrash   || false,
         created_at: fileRecord.createdAt,
@@ -135,6 +136,7 @@ export async function fetchFilesFromSupabase(userId) {
       type:      item.type,
       category:  item.category,
       size:      item.size,
+      storagePath: item.storage_path || null,
       starred:   !!item.starred,
       inTrash:   !!item.in_trash,
       createdAt: item.created_at,
@@ -246,5 +248,65 @@ export function subscribeToSupabaseRealtime(userId, onDataChange) {
   } catch {
     return () => {};
   }
+}
+
+// ── Real Cloud Binary Storage (vault-files bucket) ───────────────────────────
+export async function uploadFileBlobToSupabase(userId, fileId, fileName, blob) {
+  if (!blob || !userId) return null;
+  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const storagePath = `${userId}/${fileId}_${safeName}`;
+  try {
+    const { data, error } = await supabase.storage
+      .from('vault-files')
+      .upload(storagePath, blob, {
+        upsert: true,
+        contentType: blob.type || 'application/octet-stream'
+      });
+    if (error) {
+      console.warn('[Supabase Storage] Upload error:', error.message);
+      return null;
+    }
+    return data?.path || storagePath;
+  } catch (err) {
+    console.warn('[Supabase Storage] Upload exception:', err);
+    return null;
+  }
+}
+
+export async function downloadFileBlobFromSupabase(storagePath) {
+  if (!storagePath) return null;
+  try {
+    const { data, error } = await supabase.storage
+      .from('vault-files')
+      .download(storagePath);
+    if (error || !data) {
+      console.warn('[Supabase Storage] Download error:', error?.message);
+      return null;
+    }
+    return data; // Returns binary Blob directly
+  } catch (err) {
+    console.warn('[Supabase Storage] Download exception:', err);
+    return null;
+  }
+}
+
+export async function getFileSignedUrlFromSupabase(storagePath, expiresIn = 3600) {
+  if (!storagePath) return null;
+  try {
+    const { data, error } = await supabase.storage
+      .from('vault-files')
+      .createSignedUrl(storagePath, expiresIn);
+    if (error || !data?.signedUrl) return null;
+    return data.signedUrl;
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteFileBlobFromSupabase(storagePath) {
+  if (!storagePath) return;
+  try {
+    await supabase.storage.from('vault-files').remove([storagePath]);
+  } catch {}
 }
 

@@ -1,48 +1,43 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { useStorage } from '../context/StorageContext';
 import { RenameModal } from './RenameModal';
-import { MediaEditorModal } from './MediaEditorModal';
+import { ItemMenu } from './ItemMenu';
+import { getFileColorStyle } from '../utils/fileTypeStyles';
+
+const MediaEditorModal = lazy(() => import('./MediaEditorModal').then(m => ({ default: m.MediaEditorModal })));
+const DocumentEditorModal = lazy(() => import('./DocumentEditorModal').then(m => ({ default: m.DocumentEditorModal })));
 import {
   Folder,
+  FolderPlus,
+  FilePlus,
   FileText,
   Image as ImageIcon,
-  Video,
-  Music,
-  Code2,
-  Archive,
-  File,
   Star,
   MoreVertical,
-  Download,
-  Share2,
-  Trash2,
-  RotateCcw,
-  Edit3,
-  Eye,
   Play,
   Check,
-  RefreshCw,
-  Sliders,
-  FolderInput,
-  FolderOutput
+  File
 } from 'lucide-react';
 
 export function FileGrid() {
   const {
     displayedFolders,
     displayedFiles,
-    navigateToFolder,
     activeCategory,
     setActiveCategory,
     currentFolderId,
     folderPath,
-    setIsUploadOpen
+    setIsUploadOpen,
+    setIsNewFolderOpen,
+    uploadFiles,
+    downloadFile
   } = useStorage();
 
   const [visibleCount, setVisibleCount] = useState(60);
   const [activeMenuId, setActiveMenuId] = useState(null);
   const [renameTarget, setRenameTarget] = useState(null);
   const [editorTarget, setEditorTarget] = useState(null);
+  const [docEditorTarget, setDocEditorTarget] = useState(null);
 
   // Reset window count when category or folder changes
   useEffect(() => {
@@ -57,13 +52,16 @@ export function FileGrid() {
   }, []);
 
   const handleDownload = (file) => {
-    if (!file.blob) return;
-    const url = URL.createObjectURL(file.blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = file.name;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (downloadFile) {
+      downloadFile(file);
+    } else if (file?.blob) {
+      const url = URL.createObjectURL(file.blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
   };
 
   const handleEmptyFolderDrop = (e) => {
@@ -111,24 +109,60 @@ export function FileGrid() {
             <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', maxWidth: '360px', marginBottom: '20px' }}>
               This folder is active. Drag &amp; drop files here, or click upload to add items into this vault folder.
             </p>
-            <div style={{ display: 'flex', gap: '10px' }}>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
               <button
                 className="btn btn-primary"
                 onClick={() => setIsUploadOpen(true)}
-                style={{ padding: '10px 22px', borderRadius: '12px', fontWeight: 700, fontSize: '0.88rem' }}
+                style={{ padding: '8px 18px', borderRadius: '8px', fontWeight: 600, fontSize: '0.82rem' }}
               >
                 Upload Files into &ldquo;{currentFolderName}&rdquo;
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setIsNewFolderOpen('file')}
+                style={{ padding: '8px 14px', borderRadius: '8px', fontWeight: 600, fontSize: '0.82rem', gap: '6px' }}
+              >
+                <FilePlus size={14} color="var(--accent-emerald)" />
+                <span>New Document</span>
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setIsNewFolderOpen('folder')}
+                style={{ padding: '8px 14px', borderRadius: '8px', fontWeight: 600, fontSize: '0.82rem', gap: '6px' }}
+              >
+                <FolderPlus size={14} color="var(--accent-primary)" />
+                <span>New Subfolder</span>
               </button>
             </div>
           </>
         ) : (
           <>
-            <h3 style={{ fontSize: '1.1rem', marginBottom: '6px' }}>No items in this view</h3>
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', maxWidth: '360px' }}>
+            <h3 style={{ fontSize: '1.05rem', marginBottom: '6px', fontWeight: 600 }}>No items in this view</h3>
+            <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', maxWidth: '360px', marginBottom: activeCategory !== 'trash' && activeCategory !== 'starred' ? '18px' : '0' }}>
               {activeCategory === 'trash'
                 ? 'Trash is completely empty.'
-                : 'Upload a file or create a folder to start storing your data.'}
+                : 'Upload a file, create a folder, or start a new document in your cloud vault.'}
             </p>
+            {activeCategory !== 'trash' && activeCategory !== 'starred' && (
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setIsNewFolderOpen('folder')}
+                  style={{ padding: '7px 14px', borderRadius: '8px', fontWeight: 600, fontSize: '0.8rem', gap: '6px' }}
+                >
+                  <FolderPlus size={14} color="var(--accent-primary)" />
+                  <span>New Folder</span>
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setIsNewFolderOpen('file')}
+                  style={{ padding: '7px 14px', borderRadius: '8px', fontWeight: 600, fontSize: '0.8rem', gap: '6px' }}
+                >
+                  <FilePlus size={14} color="var(--accent-emerald)" />
+                  <span>New Document / File</span>
+                </button>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -140,11 +174,7 @@ export function FileGrid() {
 
   return (
     <>
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))',
-        gap: '16px'
-      }}>
+      <div className="vault-file-grid">
         {/* Folders */}
         {displayedFolders.map(folder => (
           <FolderCard
@@ -165,6 +195,7 @@ export function FileGrid() {
             setActiveMenuId={setActiveMenuId}
             onRename={() => setRenameTarget({ item: file, isFolder: false })}
             onEditMedia={() => setEditorTarget(file)}
+            onEditDoc={() => setDocEditorTarget(file)}
             onConvert={() => setActiveCategory('converter')}
             onDownload={() => handleDownload(file)}
           />
@@ -189,33 +220,52 @@ export function FileGrid() {
         onClose={() => setRenameTarget(null)}
       />
 
-      <MediaEditorModal
-        file={editorTarget}
-        isOpen={Boolean(editorTarget)}
-        onClose={() => setEditorTarget(null)}
-      />
+      {Boolean(editorTarget) && (
+        <Suspense fallback={null}>
+          <MediaEditorModal
+            file={editorTarget}
+            isOpen={Boolean(editorTarget)}
+            onClose={() => setEditorTarget(null)}
+          />
+        </Suspense>
+      )}
+
+      {Boolean(docEditorTarget) && (
+        <Suspense fallback={null}>
+          <DocumentEditorModal
+            file={docEditorTarget}
+            isOpen={Boolean(docEditorTarget)}
+            onClose={() => setDocEditorTarget(null)}
+          />
+        </Suspense>
+      )}
     </>
   );
 }
 
-const MemoizedFolderCard = React.memo(FolderCard);
 const MemoizedFileGridCard = React.memo(FileGridCard);
 
-
 function FolderCard({ folder, activeMenuId, setActiveMenuId, onRename }) {
-  const { toggleStar, selectedItems, toggleSelectItem, navigateToFolder, files, folders, uploadFiles, moveItemsToFolder } = useStorage();
+  const { toggleStar, selectedItems, toggleSelectItem, navigateToFolder, files, folders, uploadFiles, moveItemsToFolder, addToast } = useStorage();
   const [isDragOver, setIsDragOver] = useState(false);
   const isSelected = selectedItems.includes(folder.id);
+  const isMenuOpen = activeMenuId === folder.id;
 
-  const childFiles = files.filter(f => String(f.folderId) === String(folder.id) && !f.inTrash);
-  const childSubFolders = folders.filter(f => String(f.parentId) === String(folder.id) && !f.inTrash);
+  const childFiles = files.filter(f => String(f.folderId) === String(folder.id) && (folder.inTrash || !f.inTrash));
+  const childSubFolders = folders.filter(f => String(f.parentId) === String(folder.id) && (folder.inTrash || !f.inTrash));
   const totalContents = childFiles.length + childSubFolders.length;
 
   const handleCardClick = (e) => {
     e.stopPropagation();
-    if (!folder.inTrash) {
+    if (typeof navigateToFolder === 'function') {
       navigateToFolder(folder.id, folder.name);
     }
+  };
+
+  const handleDragStart = (e) => {
+    const dragIds = selectedItems.includes(folder.id) ? selectedItems : [folder.id];
+    e.dataTransfer.setData('application/json', JSON.stringify({ type: 'vault-items', itemIds: dragIds }));
+    e.dataTransfer.effectAllowed = 'move';
   };
 
   const handleDragOver = (e) => {
@@ -234,92 +284,110 @@ function FolderCard({ folder, activeMenuId, setActiveMenuId, onRename }) {
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(false);
-    if (!folder.inTrash) {
-      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        await uploadFiles(e.dataTransfer.files, folder.id);
+    if (folder.inTrash) return;
+
+    const raw = e.dataTransfer.getData('application/json');
+    if (raw) {
+      try {
+        const data = JSON.parse(raw);
+        if (data.type === 'vault-items' && Array.isArray(data.itemIds)) {
+          const moveIds = data.itemIds.filter(id => id !== folder.id);
+          if (moveIds.length > 0) {
+            await moveItemsToFolder(moveIds, folder.id);
+            addToast(`Moved ${moveIds.length} item(s) into "${folder.name}"`, 'success');
+          }
+          return;
+        }
+      } catch {
+        // Fallback
       }
     }
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      await uploadFiles(e.dataTransfer.files, folder.id);
+      addToast(`Uploaded ${e.dataTransfer.files.length} file(s) into "${folder.name}"`, 'success');
+    }
   };
+
+  const folderColor = folder.color || '#6366f1';
 
   return (
     <div
       className="glass-panel"
       onClick={handleCardClick}
-      onDoubleClick={handleCardClick}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setActiveMenuId(folder.id);
+      }}
+      draggable={!folder.inTrash}
+      onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       style={{
         borderRadius: 'var(--radius-md)',
-        padding: '16px',
+        padding: '14px',
         position: 'relative',
         cursor: 'pointer',
-        transition: 'all 0.18s ease',
+        transition: 'all 0.16s ease',
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'space-between',
-        border: isDragOver ? '2px dashed #10b981' : isSelected ? '2px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
-        background: isDragOver ? 'rgba(16, 185, 129, 0.15)' : isSelected ? 'rgba(99, 102, 241, 0.16)' : 'var(--bg-surface)',
-        minHeight: '135px',
-        transform: isDragOver ? 'scale(1.02)' : 'none'
+        border: isDragOver
+          ? '2px dashed var(--accent-emerald, #10b981)'
+          : isSelected
+          ? '2px solid var(--accent-primary)'
+          : '1px solid var(--border-subtle)',
+        background: isDragOver
+          ? 'rgba(16, 185, 129, 0.12)'
+          : isSelected
+          ? 'rgba(99, 102, 241, 0.14)'
+          : 'var(--bg-surface)',
+        minHeight: '140px',
+        zIndex: isMenuOpen ? 50 : 1,
+        overflow: 'visible'
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div
-            onClick={(e) => { e.stopPropagation(); toggleSelectItem(folder.id); }}
-            style={{
-              width: '20px',
-              height: '20px',
-              borderRadius: '50%',
-              border: isSelected ? '2px solid var(--accent-primary)' : '2px solid var(--border-subtle)',
-              background: isSelected ? 'var(--accent-primary)' : 'transparent',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer'
-            }}
-          >
-            {isSelected && <Check size={12} color="#ffffff" />}
-          </div>
-          <div style={{
-            width: '38px',
-            height: '38px',
-            borderRadius: '10px',
-            background: `${folder.color || '#6366f1'}22`,
-            color: folder.color || '#6366f1',
+      {/* Top Header: Select Checkbox & Actions */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+        <div
+          onClick={(e) => { e.stopPropagation(); toggleSelectItem(folder.id); }}
+          style={{
+            width: '18px',
+            height: '18px',
+            borderRadius: '50%',
+            border: isSelected ? '2px solid var(--accent-primary)' : '2px solid var(--border-subtle)',
+            background: isSelected ? 'var(--accent-primary)' : 'transparent',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            border: `1px solid ${folder.color || '#6366f1'}44`
-          }}>
-            <Folder size={20} fill={folder.color || '#6366f1'} />
-          </div>
+            cursor: 'pointer'
+          }}
+        >
+          {isSelected && <Check size={11} color="#ffffff" />}
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-          <span style={{ fontSize: '0.68rem', padding: '2px 7px', borderRadius: '10px', background: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)', fontWeight: 600 }}>
-            {totalContents} item{totalContents !== 1 ? 's' : ''}
-          </span>
           {!folder.inTrash && (
             <button
               onClick={(e) => { e.stopPropagation(); toggleStar(folder.id, true); }}
-              style={{ background: 'none', border: 'none', color: folder.starred ? '#f59e0b' : 'var(--text-muted)', cursor: 'pointer', padding: '4px' }}
+              style={{ background: 'none', border: 'none', color: folder.starred ? '#f59e0b' : 'var(--text-muted)', cursor: 'pointer', padding: '3px' }}
             >
-              <Star size={16} fill={folder.starred ? '#f59e0b' : 'none'} />
+              <Star size={15} fill={folder.starred ? '#f59e0b' : 'none'} />
             </button>
           )}
-          
+
           <div style={{ position: 'relative' }}>
             <button
-              onClick={(e) => { e.stopPropagation(); setActiveMenuId(activeMenuId === folder.id ? null : folder.id); }}
-              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px' }}
+              onClick={(e) => { e.stopPropagation(); setActiveMenuId(isMenuOpen ? null : folder.id); }}
+              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '3px' }}
             >
               <MoreVertical size={16} />
             </button>
 
-            {activeMenuId === folder.id && (
-              <ContextMenu
+            {isMenuOpen && (
+              <ItemMenu
                 item={folder}
                 isFolder={true}
                 onClose={() => setActiveMenuId(null)}
@@ -331,42 +399,105 @@ function FolderCard({ folder, activeMenuId, setActiveMenuId, onRename }) {
         </div>
       </div>
 
-      <div>
-        <div style={{ fontWeight: '700', fontSize: '0.95rem', color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-          {folder.name}
+      {/* Prominent Clean Folder Icon */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '4px 0 10px 0' }}>
+        <div style={{
+          width: '46px',
+          height: '46px',
+          borderRadius: '12px',
+          background: `${folderColor}1f`,
+          color: folderColor,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          border: `1px solid ${folderColor}33`,
+          flexShrink: 0
+        }}>
+          <Folder size={26} fill={folderColor} />
         </div>
-        <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span>Folder</span>
-          <span style={{ color: 'var(--accent-primary)', fontWeight: 700 }}>Click to Open &rarr;</span>
+
+        <div style={{ overflow: 'hidden' }}>
+          <div style={{ fontWeight: '700', fontSize: '0.94rem', color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+            {folder.name}
+          </div>
+          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+            {totalContents} item{totalContents !== 1 ? 's' : ''} &bull; Folder
+          </div>
         </div>
       </div>
+
+      {/* Drag & Drop Feedback or Clean Footer */}
+      {isDragOver && (
+        <div style={{
+          fontSize: '0.72rem',
+          paddingTop: '6px',
+          borderTop: '1px solid var(--border-subtle)',
+          display: 'flex',
+          alignItems: 'center',
+          color: 'var(--accent-emerald)',
+          fontWeight: 600
+        }}>
+          <span>&darr; Drop to move inside</span>
+        </div>
+      )}
     </div>
   );
 }
 
-function FileGridCard({ file, activeMenuId, setActiveMenuId, onRename, onEditMedia, onConvert, onDownload }) {
-  const { toggleStar, setActivePreview, setActiveShare, setActiveAudioTrack, selectedItems, toggleSelectItem } = useStorage();
+function FileGridCard({ file, activeMenuId, setActiveMenuId, onRename, onEditMedia, onEditDoc, onConvert: _onConvert, onDownload }) {
+  const { toggleStar, setActivePreview, setActiveShare, setActiveAudioTrack, selectedItems, toggleSelectItem, ensureFileBlob } = useStorage();
   const [thumbUrl, setThumbUrl] = useState(null);
+  const [docSnippet, setDocSnippet] = useState(null);
   const isSelected = selectedItems.includes(file.id);
+  const isMenuOpen = activeMenuId === file.id;
+
+  const ext = file.name?.split('.').pop()?.toLowerCase() || '';
+  const fileStyle = getFileColorStyle(file);
+
+  const isPdf = ext === 'pdf' || file.type === 'application/pdf';
+  const isDoc = ['doc', 'docx', 'rtf'].includes(ext);
+  const isSheet = ['csv', 'xlsx', 'xls'].includes(ext);
+  const isText = ['txt', 'md', 'markdown', 'log'].includes(ext);
+  const isCode = file.category === 'code' || ['js', 'jsx', 'ts', 'tsx', 'css', 'json', 'py', 'java', 'cpp', 'c', 'php', 'sql', 'sh', 'xml', 'html'].includes(ext);
 
   useEffect(() => {
-    if (file.blob && (file.category === 'image' || file.category === 'video')) {
-      const url = URL.createObjectURL(file.blob);
-      setThumbUrl(url);
-      return () => URL.revokeObjectURL(url);
+    let cancelled = false;
+    let url = null;
+    if (file.category === 'image' || file.category === 'video') {
+      if (file.blob instanceof Blob) {
+        url = URL.createObjectURL(file.blob);
+        setThumbUrl(url);
+      } else if (typeof ensureFileBlob === 'function' && (file.telegramFileId || file.parts || file.storagePath)) {
+        ensureFileBlob(file).then(b => {
+          if (!cancelled && b instanceof Blob) {
+            url = URL.createObjectURL(b);
+            setThumbUrl(url);
+          }
+        }).catch(() => {});
+      }
     }
-  }, [file]);
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [file, ensureFileBlob]);
 
-  const getCategoryIcon = (category) => {
-    switch (category) {
-      case 'image': return <ImageIcon size={22} color="#06b6d4" />;
-      case 'video': return <Video size={22} color="#ec4899" />;
-      case 'audio': return <Music size={22} color="#f59e0b" />;
-      case 'document': return <FileText size={22} color="#10b981" />;
-      case 'code': return <Code2 size={22} color="#8b5cf6" />;
-      case 'archive': return <Archive size={22} color="#6366f1" />;
-      default: return <File size={22} color="#94a3b8" />;
+  useEffect(() => {
+    if (!isPdf && !isDoc && (isText || isCode || ext === 'csv')) {
+      if (typeof file.content === 'string') {
+        setDocSnippet(file.content.slice(0, 180));
+      } else if (file.blob && typeof file.blob.slice === 'function') {
+        file.blob.slice(0, 600).text().then(txt => {
+          setDocSnippet(txt.slice(0, 180));
+        }).catch(() => {});
+      }
     }
+  }, [file, isPdf, isDoc, isText, isCode, ext]);
+
+  const handleDragStart = (e) => {
+    const dragIds = selectedItems.includes(file.id) ? selectedItems : [file.id];
+    e.dataTransfer.setData('application/json', JSON.stringify({ type: 'vault-items', itemIds: dragIds }));
+    e.dataTransfer.effectAllowed = 'move';
   };
 
   const formatSize = (bytes) => {
@@ -377,31 +508,266 @@ function FileGridCard({ file, activeMenuId, setActiveMenuId, onRename, onEditMed
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   };
 
+  // ── 1. Image & Video Card: FULL-BLEED BORDERLESS HERO WITH FLOATING CONTROLS ─
+  if (file.category === 'image' || file.category === 'video') {
+    const isVideoCard = file.category === 'video';
+    return (
+      <div
+        className="glass-panel"
+        onClick={() => setActivePreview(file)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setActiveMenuId(file.id);
+        }}
+        draggable={!file.inTrash}
+        onDragStart={handleDragStart}
+        style={{
+          borderRadius: 'var(--radius-md)',
+          padding: '12px',
+          position: 'relative',
+          cursor: 'pointer',
+          transition: 'transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease',
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'space-between',
+          border: isSelected ? '2px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+          background: isSelected ? 'rgba(99, 102, 241, 0.14)' : 'var(--bg-surface)',
+          minHeight: '210px',
+          zIndex: isMenuOpen ? 50 : 1,
+          overflow: 'visible'
+        }}
+      >
+        {/* Borderless Edge-to-Edge Media Hero Container */}
+        <div style={{
+          position: 'relative',
+          width: 'calc(100% + 24px)',
+          margin: '-12px -12px 10px -12px',
+          height: '138px',
+          background: '#090a0f',
+          borderTopLeftRadius: 'var(--radius-md)',
+          borderTopRightRadius: 'var(--radius-md)',
+          overflow: 'hidden'
+        }}>
+          {thumbUrl ? (
+            isVideoCard ? (
+              <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+                <video
+                  src={thumbUrl}
+                  muted
+                  playsInline
+                  preload="metadata"
+                  onMouseEnter={(e) => { e.currentTarget.play().catch(() => {}); }}
+                  onMouseLeave={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }}
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'cover',
+                    display: 'block',
+                    border: 'none'
+                  }}
+                />
+                <div style={{
+                  position: 'absolute',
+                  inset: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  pointerEvents: 'none',
+                  background: 'linear-gradient(180deg, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.35) 100%)'
+                }}>
+                  <div style={{
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: '50%',
+                    background: 'rgba(0, 0, 0, 0.65)',
+                    backdropFilter: 'blur(4px)',
+                    border: '1px solid rgba(255, 255, 255, 0.25)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}>
+                    <Play size={15} fill="#ffffff" color="#ffffff" style={{ marginLeft: '2px' }} />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <img
+                src={thumbUrl}
+                alt={file.name}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  display: 'block'
+                }}
+              />
+            )
+          ) : (
+            <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {isVideoCard ? (
+                <Play size={32} color="var(--text-muted)" opacity={0.4} />
+              ) : (
+                <ImageIcon size={32} color="var(--text-muted)" opacity={0.4} />
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Floating Controls Overlay (Sits OUTSIDE the image overflow container so menu never clips) */}
+        <div style={{
+          position: 'absolute',
+          top: '8px',
+          left: '8px',
+          right: '8px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          zIndex: 10,
+          pointerEvents: 'none'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', pointerEvents: 'auto' }}>
+            <div
+              onClick={(e) => { e.stopPropagation(); toggleSelectItem(file.id); }}
+              style={{
+                width: '20px',
+                height: '20px',
+                borderRadius: '50%',
+                border: isSelected ? '2px solid var(--accent-primary)' : '2px solid rgba(255,255,255,0.7)',
+                background: isSelected ? 'var(--accent-primary)' : 'rgba(0,0,0,0.5)',
+                backdropFilter: 'blur(4px)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer'
+              }}
+            >
+              {isSelected && <Check size={11} color="#ffffff" />}
+            </div>
+            <span style={{
+              fontSize: '0.62rem',
+              textTransform: 'uppercase',
+              fontWeight: 700,
+              background: 'rgba(0,0,0,0.55)',
+              backdropFilter: 'blur(4px)',
+              color: fileStyle.color,
+              padding: '2px 6px',
+              borderRadius: '4px',
+              border: `1px solid ${fileStyle.border}`
+            }}>
+              {fileStyle.label}
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', pointerEvents: 'auto' }}>
+            {!file.inTrash && (
+              <button
+                onClick={(e) => { e.stopPropagation(); toggleStar(file.id, false); }}
+                style={{
+                  background: 'rgba(0,0,0,0.55)',
+                  backdropFilter: 'blur(4px)',
+                  border: 'none',
+                  borderRadius: '50%',
+                  width: '24px',
+                  height: '24px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: file.starred ? '#f59e0b' : '#ffffff',
+                  cursor: 'pointer'
+                }}
+              >
+                <Star size={13} fill={file.starred ? '#f59e0b' : 'none'} />
+              </button>
+            )}
+
+            <div style={{ position: 'relative' }}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setActiveMenuId(isMenuOpen ? null : file.id); }}
+                style={{
+                  background: 'rgba(0,0,0,0.55)',
+                  backdropFilter: 'blur(4px)',
+                  border: 'none',
+                  borderRadius: '50%',
+                  width: '24px',
+                  height: '24px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#ffffff',
+                  cursor: 'pointer'
+                }}
+              >
+                <MoreVertical size={13} />
+              </button>
+
+              {isMenuOpen && (
+                <ItemMenu
+                  item={file}
+                  isFolder={false}
+                  onClose={() => setActiveMenuId(null)}
+                  onRename={onRename}
+                  onEditMedia={onEditMedia}
+                  onEditDoc={onEditDoc}
+                  onDownload={onDownload}
+                  onPreview={() => setActivePreview(file)}
+                  onShare={() => setActiveShare(file)}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Bottom Metadata */}
+        <div>
+          <div style={{ fontWeight: '600', fontSize: '0.86rem', color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+            {file.name}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+            <span>{formatSize(file.size)}</span>
+            <span>{new Date(file.createdAt).toLocaleDateString()}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── 2. Color-Coded Document & Code Cards ──────────────────────────────────────
   return (
     <div
       className="glass-panel"
-      onClick={() => !file.inTrash && setActivePreview(file)}
+      onClick={() => setActivePreview(file)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setActiveMenuId(file.id);
+      }}
+      draggable={!file.inTrash}
+      onDragStart={handleDragStart}
       style={{
         borderRadius: 'var(--radius-md)',
         padding: '12px 14px',
         position: 'relative',
         cursor: 'pointer',
-        transition: 'var(--transition-fast)',
+        transition: 'transform 0.16s ease, border-color 0.16s ease',
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'space-between',
         border: isSelected ? '2px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
-        background: isSelected ? 'rgba(99, 102, 241, 0.16)' : 'var(--bg-surface)',
-        minHeight: '185px'
+        background: isSelected ? 'rgba(99, 102, 241, 0.14)' : 'var(--bg-surface)',
+        minHeight: '210px',
+        zIndex: isMenuOpen ? 50 : 1,
+        overflow: 'visible'
       }}
     >
+      {/* Top Card Bar: Distinct Color-Coded Tag */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <div
             onClick={(e) => { e.stopPropagation(); toggleSelectItem(file.id); }}
             style={{
-              width: '20px',
-              height: '20px',
+              width: '18px',
+              height: '18px',
               borderRadius: '50%',
               border: isSelected ? '2px solid var(--accent-primary)' : '2px solid var(--border-subtle)',
               background: isSelected ? 'var(--accent-primary)' : 'transparent',
@@ -411,10 +777,19 @@ function FileGridCard({ file, activeMenuId, setActiveMenuId, onRename, onEditMed
               cursor: 'pointer'
             }}
           >
-            {isSelected && <Check size={12} color="#ffffff" />}
+            {isSelected && <Check size={11} color="#ffffff" />}
           </div>
-          <span className="badge badge-indigo" style={{ fontSize: '0.65rem', textTransform: 'uppercase' }}>
-            {file.category}
+          <span style={{
+            fontSize: '0.64rem',
+            textTransform: 'uppercase',
+            fontWeight: 700,
+            padding: '2px 7px',
+            borderRadius: '4px',
+            background: fileStyle.bg,
+            color: fileStyle.color,
+            border: `1px solid ${fileStyle.border}`
+          }}>
+            {fileStyle.label}
           </span>
         </div>
 
@@ -424,26 +799,26 @@ function FileGridCard({ file, activeMenuId, setActiveMenuId, onRename, onEditMed
               onClick={(e) => { e.stopPropagation(); toggleStar(file.id, false); }}
               style={{ background: 'none', border: 'none', color: file.starred ? '#f59e0b' : 'var(--text-muted)', cursor: 'pointer', padding: '2px' }}
             >
-              <Star size={15} fill={file.starred ? '#f59e0b' : 'none'} />
+              <Star size={14} fill={file.starred ? '#f59e0b' : 'none'} />
             </button>
           )}
 
           <div style={{ position: 'relative' }}>
             <button
-              onClick={(e) => { e.stopPropagation(); setActiveMenuId(activeMenuId === file.id ? null : file.id); }}
+              onClick={(e) => { e.stopPropagation(); setActiveMenuId(isMenuOpen ? null : file.id); }}
               style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px' }}
             >
-              <MoreVertical size={16} />
+              <MoreVertical size={15} />
             </button>
 
-            {activeMenuId === file.id && (
-              <ContextMenu
+            {isMenuOpen && (
+              <ItemMenu
                 item={file}
                 isFolder={false}
                 onClose={() => setActiveMenuId(null)}
                 onRename={onRename}
                 onEditMedia={onEditMedia}
-                onConvert={onConvert}
+                onEditDoc={onEditDoc}
                 onDownload={onDownload}
                 onPreview={() => setActivePreview(file)}
                 onShare={() => setActiveShare(file)}
@@ -453,20 +828,20 @@ function FileGridCard({ file, activeMenuId, setActiveMenuId, onRename, onEditMed
         </div>
       </div>
 
+      {/* Outside Preview Representation with Distinct Color Theme */}
       <div style={{
-        height: '95px',
-        borderRadius: 'var(--radius-sm)',
+        height: '105px',
+        borderRadius: '7px',
         background: 'var(--bg-input)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         overflow: 'hidden',
         position: 'relative',
-        marginBottom: '10px'
+        marginBottom: '10px',
+        border: '1px solid var(--border-subtle)'
       }}>
-        {file.category === 'image' && thumbUrl ? (
-          <img src={thumbUrl} alt={file.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-        ) : file.category === 'video' && thumbUrl ? (
+        {file.category === 'video' && thumbUrl ? (
           <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <video src={thumbUrl} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             <div style={{
@@ -479,42 +854,163 @@ function FileGridCard({ file, activeMenuId, setActiveMenuId, onRename, onEditMed
               alignItems: 'center',
               justifyContent: 'center'
             }}>
-              <Play size={16} fill="#ffffff" color="#ffffff" style={{ marginLeft: '2px' }} />
+              <Play size={15} fill="#ffffff" color="#ffffff" style={{ marginLeft: '2px' }} />
             </div>
           </div>
-        ) : (
+        ) : isPdf ? (
+          // Stylized Miniature PDF Document Page with Crimson Accent
+          <div style={{
+            width: '82px',
+            height: '92px',
+            background: 'var(--bg-surface)',
+            borderRadius: '4px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden'
+          }}>
+            <div style={{ background: '#ef4444', color: '#fff', fontSize: '0.58rem', fontWeight: 800, padding: '2px 5px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>PDF</span>
+              <FileText size={9} />
+            </div>
+            <div style={{ padding: '6px', flex: 1, display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div style={{ height: '4px', background: 'var(--text-muted)', opacity: 0.5, borderRadius: '2px', width: '85%' }} />
+              <div style={{ height: '3px', background: 'var(--text-muted)', opacity: 0.3, borderRadius: '2px', width: '100%' }} />
+              <div style={{ height: '3px', background: 'var(--text-muted)', opacity: 0.3, borderRadius: '2px', width: '92%' }} />
+              <div style={{ height: '3px', background: 'var(--text-muted)', opacity: 0.3, borderRadius: '2px', width: '65%' }} />
+            </div>
+          </div>
+        ) : isDoc ? (
+          // Stylized Miniature Word / DOCX Page with Blue Accent
+          <div style={{
+            width: '82px',
+            height: '92px',
+            background: 'var(--bg-surface)',
+            borderRadius: '4px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+            border: '1px solid rgba(59, 130, 246, 0.35)',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden'
+          }}>
+            <div style={{ background: '#3b82f6', color: '#fff', fontSize: '0.58rem', fontWeight: 800, padding: '2px 5px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>DOCX</span>
+              <FileText size={9} />
+            </div>
+            <div style={{ padding: '6px', flex: 1, display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div style={{ height: '4px', background: 'var(--text-muted)', opacity: 0.5, borderRadius: '2px', width: '70%' }} />
+              <div style={{ height: '3px', background: 'var(--text-muted)', opacity: 0.3, borderRadius: '2px', width: '95%' }} />
+              <div style={{ height: '3px', background: 'var(--text-muted)', opacity: 0.3, borderRadius: '2px', width: '88%' }} />
+            </div>
+          </div>
+        ) : isSheet ? (
+          // Stylized Miniature Spreadsheet Table with Emerald Accent
+          <div style={{
+            width: '84px',
+            height: '92px',
+            background: 'var(--bg-surface)',
+            borderRadius: '4px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+            border: '1px solid rgba(16, 185, 129, 0.35)',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden'
+          }}>
+            <div style={{ background: '#10b981', color: '#fff', fontSize: '0.58rem', fontWeight: 800, padding: '2px 5px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>{fileStyle.label}</span>
+              <span style={{ fontSize: '0.55rem' }}>DATA</span>
+            </div>
+            <div style={{ padding: '4px', flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px' }}>
+              {[...Array(6)].map((_, i) => (
+                <div key={i} style={{ height: '10px', background: 'var(--bg-input)', borderRadius: '1px', opacity: 0.6 }} />
+              ))}
+            </div>
+          </div>
+        ) : isCode ? (
+          // Stylized Miniature Code Terminal with Language Color Dot
+          <div style={{
+            width: '100%',
+            height: '100%',
+            background: '#0d1117',
+            padding: '8px 10px',
+            display: 'flex',
+            flexDirection: 'column',
+            fontFamily: 'monospace',
+            fontSize: '0.62rem',
+            color: fileStyle.color,
+            overflow: 'hidden',
+            lineHeight: '1.4'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '4px', borderBottom: '1px solid #21262d', paddingBottom: '3px' }}>
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: fileStyle.color }} />
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#4b5563' }} />
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#374151' }} />
+              <span style={{ marginLeft: 'auto', color: fileStyle.color, fontWeight: 700, fontSize: '0.58rem' }}>{fileStyle.label}</span>
+            </div>
+            <div style={{ opacity: 0.85, whiteSpace: 'pre-wrap', overflow: 'hidden' }}>
+              {docSnippet ? docSnippet.slice(0, 110) : `// ${file.name}\nexport default function () {\n  return true;\n}`}
+            </div>
+          </div>
+        ) : isText ? (
+          // Stylized Miniature Text / Markdown Snippet Page with Violet Accent
+          <div style={{
+            width: '100%',
+            height: '100%',
+            background: 'var(--bg-surface)',
+            padding: '8px 10px',
+            display: 'flex',
+            flexDirection: 'column',
+            fontSize: '0.65rem',
+            color: 'var(--text-secondary)',
+            overflow: 'hidden',
+            lineHeight: '1.4',
+            borderLeft: `3px solid ${fileStyle.color}`
+          }}>
+            <div style={{ fontSize: '0.6rem', fontWeight: 700, color: fileStyle.color, marginBottom: '3px', textTransform: 'uppercase' }}>
+              {fileStyle.label} DOCUMENT
+            </div>
+            <div style={{ opacity: 0.8, whiteSpace: 'pre-wrap', overflow: 'hidden' }}>
+              {docSnippet ? docSnippet.slice(0, 110) : file.name}
+            </div>
+          </div>
+        ) : file.category === 'audio' ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
-            {getCategoryIcon(file.category)}
-            {file.category === 'audio' && (
-              <button
-                onClick={(e) => { e.stopPropagation(); setActiveAudioTrack(file); }}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                  background: 'var(--accent-gradient)',
-                  border: 'none',
-                  color: '#ffffff',
-                  fontSize: '0.72rem',
-                  padding: '3px 8px',
-                  borderRadius: 'var(--radius-full)',
-                  cursor: 'pointer',
-                  fontWeight: '600'
-                }}
-              >
-                <Play size={10} fill="#ffffff" /> Play Audio
-              </button>
-            )}
+            <span style={{ color: '#f59e0b', fontSize: '0.74rem', fontWeight: 600 }}>Audio Track</span>
+            <button
+              onClick={(e) => { e.stopPropagation(); setActiveAudioTrack(file); }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                background: 'var(--accent-gradient)',
+                border: 'none',
+                color: '#ffffff',
+                fontSize: '0.72rem',
+                padding: '3px 9px',
+                borderRadius: 'var(--radius-full)',
+                cursor: 'pointer',
+                fontWeight: '600'
+              }}
+            >
+              <Play size={10} fill="#ffffff" /> Play Audio
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', color: fileStyle.color }}>
+            <File size={24} />
+            <span style={{ fontSize: '0.68rem', fontWeight: 700 }}>{fileStyle.label}</span>
           </div>
         )}
       </div>
 
+      {/* Bottom Metadata */}
       <div>
-        <div style={{ fontWeight: '600', fontSize: '0.85rem', color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+        <div style={{ fontWeight: '600', fontSize: '0.86rem', color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
           {file.name}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '4px' }}>
           <span>{formatSize(file.size)}</span>
           <span>{new Date(file.createdAt).toLocaleDateString()}</span>
         </div>
@@ -522,100 +1018,3 @@ function FileGridCard({ file, activeMenuId, setActiveMenuId, onRename, onEditMed
     </div>
   );
 }
-
-function ContextMenu({ item, isFolder, onClose, onRename, onEditMedia, onConvert, onDownload, onPreview, onShare, onOpenFolder }) {
-  const { moveToTrash, restoreFromTrash, deletePermanently, zipSelectedFiles, unzipFile, setMoveModalTarget } = useStorage();
-
-  const isMedia = item.category === 'image' || item.category === 'video';
-
-  return (
-    <div
-      onClick={(e) => e.stopPropagation()}
-      style={{
-        position: 'absolute',
-        top: '24px',
-        right: '0',
-        width: '190px',
-        background: 'var(--bg-modal)',
-        border: '1px solid var(--border-strong)',
-        borderRadius: 'var(--radius-md)',
-        boxShadow: 'var(--shadow-lg)',
-        padding: '6px',
-        zIndex: 300,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '2px'
-      }}
-    >
-      {!item.inTrash ? (
-        <>
-          {isFolder && onOpenFolder && (
-            <button className="btn btn-ghost" onClick={() => { onOpenFolder(); onClose(); }} style={{ ...menuBtnStyle, color: 'var(--accent-primary)', fontWeight: 700 }}>
-              <Folder size={14} /> Open Folder
-            </button>
-          )}
-          {!isFolder && onPreview && (
-            <button className="btn btn-ghost" onClick={() => { onPreview(); onClose(); }} style={menuBtnStyle}>
-              <Eye size={14} /> Open Preview
-            </button>
-          )}
-          {!isFolder && isMedia && onEditMedia && (
-            <button className="btn btn-ghost" onClick={() => { onEditMedia(); onClose(); }} style={{ ...menuBtnStyle, color: 'var(--accent-amber)' }}>
-              <Sliders size={14} /> Pro Media Editor
-            </button>
-          )}
-          {!isFolder && onConvert && (
-            <button className="btn btn-ghost" onClick={() => { onConvert(); onClose(); }} style={{ ...menuBtnStyle, color: 'var(--accent-cyan)' }}>
-              <RefreshCw size={14} /> Format Converter
-            </button>
-          )}
-          {!isFolder && (
-            <button className="btn btn-ghost" onClick={() => { zipSelectedFiles(); onClose(); }} style={{ ...menuBtnStyle, color: 'var(--accent-amber)' }}>
-              <Archive size={14} /> Compress into .ZIP
-            </button>
-          )}
-          {!isFolder && (item.name?.endsWith('.zip') || item.category === 'archive') && (
-            <button className="btn btn-ghost" onClick={() => { unzipFile(item); onClose(); }} style={{ ...menuBtnStyle, color: 'var(--accent-cyan)' }}>
-              <FolderOutput size={14} /> Unzip Archive File
-            </button>
-          )}
-          <button className="btn btn-ghost" onClick={() => { setMoveModalTarget([item.id]); onClose(); }} style={menuBtnStyle}>
-            <FolderInput size={14} /> Move to Folder...
-          </button>
-          {!isFolder && onDownload && (
-            <button className="btn btn-ghost" onClick={() => { onDownload(); onClose(); }} style={menuBtnStyle}>
-              <Download size={14} /> Download
-            </button>
-          )}
-          {!isFolder && onShare && (
-            <button className="btn btn-ghost" onClick={() => { onShare(); onClose(); }} style={menuBtnStyle}>
-              <Share2 size={14} /> Share Link
-            </button>
-          )}
-          <button className="btn btn-ghost" onClick={() => { onRename(); onClose(); }} style={menuBtnStyle}>
-            <Edit3 size={14} /> Rename
-          </button>
-          <button className="btn btn-ghost" onClick={() => { moveToTrash(item.id, isFolder); onClose(); }} style={{ ...menuBtnStyle, color: 'var(--accent-rose)' }}>
-            <Trash2 size={14} /> Move to Trash
-          </button>
-        </>
-      ) : (
-        <>
-          <button className="btn btn-ghost" onClick={() => { restoreFromTrash(item.id, isFolder); onClose(); }} style={menuBtnStyle}>
-            <RotateCcw size={14} /> Restore
-          </button>
-          <button className="btn btn-ghost" onClick={() => { deletePermanently(item.id, isFolder); onClose(); }} style={{ ...menuBtnStyle, color: 'var(--accent-rose)' }}>
-            <Trash2 size={14} /> Delete Forever
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
-const menuBtnStyle = {
-  width: '100%',
-  justifyContent: 'flex-start',
-  padding: '6px 10px',
-  fontSize: '0.8rem'
-};

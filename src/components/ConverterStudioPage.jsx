@@ -1,32 +1,60 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import JSZip from 'jszip';
+import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { useStorage } from '../context/StorageContext';
-import { useAuth } from '../context/AuthContext';
 import { saveConvertedBlob, getConvertedBlob, getAllConvertedBlobs, deleteConvertedBlob } from '../services/dbService';
+import { getFileColorStyle } from '../utils/fileTypeStyles';
 import {
-  RefreshCw, Upload, FileCheck, HardDrive, Download,
-  Sparkles, CheckCircle2, Trash2, ArrowRight, Search,
-  FileText, Zap, X, Eye
+  RefreshCw,
+  Upload,
+  HardDrive,
+  Download,
+  Trash2,
+  Search,
+  FileText,
+  Check,
+  X,
+  Eye,
+  SlidersHorizontal,
+  CheckCircle2,
+  FileType
 } from 'lucide-react';
 
-// ─── Persist converted session history across refreshes ───────────────────────
+// ── Persist converted session history across refreshes ────────────────────────
 const LS_KEY = 'converter_session_history';
 function loadSession() {
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return [];
-    // Strip fileObj (can't survive serialisation) — mark as downloadable only if savedToVault
     return JSON.parse(raw).map(i => ({ ...i, fileObj: null }));
-  } catch { return []; }
-}
-function saveSession(items) {
-  try {
-    // Don't persist fileObj blobs — they're not serialisable
-    localStorage.setItem(LS_KEY, JSON.stringify(items.map(i => ({ ...i, fileObj: null }))));
-  } catch { /* quota exceeded — ignore */ }
+  } catch {
+    return [];
+  }
 }
 
-// ─── Mime map ─────────────────────────────────────────────────────────────────
-const MIME = {
+function saveSession(items) {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(items.map(i => ({ ...i, fileObj: null }))));
+  } catch {
+    // quota exceeded — ignore
+  }
+}
+
+// ── Target Formats Definition ──────────────────────────────────────────────────
+const FORMATS = [
+  { key: 'pdf',  label: 'PDF Document',       ext: '.pdf',  category: 'document', desc: 'Standard Portable Document with real pagination' },
+  { key: 'docx', label: 'Word Document',      ext: '.docx', category: 'document', desc: 'Valid Microsoft Word OpenXML (.docx) package' },
+  { key: 'html', label: 'HTML Web Page',      ext: '.html', category: 'document', desc: 'Clean semantic web page with styling' },
+  { key: 'md',   label: 'Markdown',           ext: '.md',   category: 'document', desc: 'Lightweight formatted markdown file' },
+  { key: 'txt',  label: 'Plain Text',         ext: '.txt',  category: 'document', desc: 'Unformatted UTF-8 raw text' },
+  { key: 'png',  label: 'PNG Image',          ext: '.png',  category: 'image',    desc: 'Lossless transparent raster image' },
+  { key: 'jpeg', label: 'JPEG Image',         ext: '.jpg',  category: 'image',    desc: 'Compressed photo format with custom quality' },
+  { key: 'webp', label: 'WebP Image',         ext: '.webp', category: 'image',    desc: 'Modern web image with optimal compression' },
+  { key: 'json', label: 'JSON Data',          ext: '.json', category: 'data',     desc: 'Structured JSON array with indentation' },
+  { key: 'csv',  label: 'CSV Spreadsheet',    ext: '.csv',  category: 'data',     desc: 'Comma-separated spreadsheet table' }
+];
+
+const MIME_MAP = {
   pdf:  'application/pdf',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   html: 'text/html',
@@ -37,94 +65,160 @@ const MIME = {
   png:  'image/png',
   jpeg: 'image/jpeg',
   jpg:  'image/jpeg',
-  webp: 'image/webp',
+  webp: 'image/webp'
 };
 
-// ─── Real image → image/pdf canvas conversion ─────────────────────────────────
-async function convertImage(blob, format) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
+function formatSize(bytes) {
+  if (!bytes || bytes === 0) return '0 B';
+  const k = 1024, sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+// ── REAL CONVERSION FUNCTIONS ──────────────────────────────────────────────────
+
+// 1. Image → PDF via PDFDocument (Embeds real PNG/JPEG into real PDF page)
+async function convertImageToPdf(blob, baseName, options = {}) {
+  const pdfDoc = await PDFDocument.create();
+  let img;
+
+  if (blob.type === 'image/png') {
+    const pngBytes = await blob.arrayBuffer();
+    img = await pdfDoc.embedPng(pngBytes);
+  } else {
+    // Render to canvas to produce standard JPEG bytes
+    const canvas = document.createElement('canvas');
+    const imageObj = new Image();
     const url = URL.createObjectURL(blob);
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width  = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext('2d');
-      if (['jpeg', 'jpg', 'pdf'].includes(format)) {
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-      }
-      ctx.drawImage(img, 0, 0);
-      URL.revokeObjectURL(url);
-      const outMime = format === 'pdf' ? 'image/jpeg' : (MIME[format] || 'image/png');
-      canvas.toBlob(b => b ? resolve(b) : reject(new Error('Canvas toBlob failed')), outMime, 0.92);
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image load failed')); };
-    img.src = url;
-  });
-}
-
-// ─── Real text / document conversion ─────────────────────────────────────────
-async function readBlobText(blob) {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload  = e => resolve(e.target.result);
-    fr.onerror = () => reject(fr.error);
-    fr.readAsText(blob);
-  });
-}
-
-function buildTextOutput(format, baseName, text) {
-  switch (format) {
-    case 'html':
-      return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <title>${baseName}</title>
-  <style>body{font-family:system-ui,sans-serif;padding:40px;max-width:800px;margin:auto;line-height:1.7}pre{white-space:pre-wrap;word-break:break-word}</style>
-</head>
-<body>
-  <h1>${baseName}</h1>
-  <hr/>
-  <pre>${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
-  <hr/>
-  <small>Converted by Aether Vault Converter — ${new Date().toLocaleString()}</small>
-</body>
-</html>`;
-    case 'md':
-      return `# ${baseName}\n\n> Converted by Aether Vault | ${new Date().toLocaleDateString()}\n\n---\n\n${text}`;
-    case 'json':
-      return JSON.stringify({
-        title: baseName,
-        convertedAt: new Date().toISOString(),
-        source: 'Aether Vault Converter',
-        lines: text.split('\n').length,
-        content: text
-      }, null, 2);
-    case 'csv': {
-      const lines = text.split('\n').filter(Boolean);
-      const header = 'line_number,content';
-      const rows = lines.map((l, i) => `${i + 1},"${l.replace(/"/g, '""')}"`);
-      return [header, ...rows].join('\n');
-    }
-    case 'pdf':
-      // RFC-minimal PDF with real text rendering
-      return buildMinimalPdf(baseName, text);
-    case 'docx':
-      // Return a plain-text inside docx-like wrapper (real OOXML needs a zip library)
-      return `[DOCX] ${baseName.toUpperCase()}\n${'='.repeat(60)}\n\n${text}\n\n${'='.repeat(60)}\nConverted at ${new Date().toISOString()}`;
-    default:
-      return text;
+    await new Promise((resolve, reject) => {
+      imageObj.onload = resolve;
+      imageObj.onerror = reject;
+      imageObj.src = url;
+    });
+    canvas.width = imageObj.naturalWidth;
+    canvas.height = imageObj.naturalHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(imageObj, 0, 0);
+    URL.revokeObjectURL(url);
+    const jpegBlob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', options.quality ? options.quality / 100 : 0.92));
+    const jpgBytes = await jpegBlob.arrayBuffer();
+    img = await pdfDoc.embedJpg(jpgBytes);
   }
+
+  const orientation = options.orientation || 'portrait';
+  const isA4 = options.pageSize !== 'letter';
+  let pageWidth = orientation === 'landscape' ? (isA4 ? 841.89 : 792) : (isA4 ? 595.28 : 612);
+  let pageHeight = orientation === 'landscape' ? (isA4 ? 595.28 : 612) : (isA4 ? 841.89 : 792);
+
+  if (options.pageSize === 'fit') {
+    pageWidth = img.width;
+    pageHeight = img.height;
+  }
+
+  const page = pdfDoc.addPage([pageWidth, pageHeight]);
+  const margin = options.pageSize === 'fit' ? 0 : 36;
+  const availW = pageWidth - margin * 2;
+  const availH = pageHeight - margin * 2;
+  const scale = Math.min(availW / img.width, availH / img.height, 1);
+  const drawW = img.width * scale;
+  const drawH = img.height * scale;
+  const posX = (pageWidth - drawW) / 2;
+  const posY = (pageHeight - drawH) / 2;
+
+  page.drawImage(img, { x: posX, y: posY, width: drawW, height: drawH });
+  const pdfBytes = await pdfDoc.save();
+  return new Blob([pdfBytes], { type: 'application/pdf' });
 }
 
-import JSZip from 'jszip';
-import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+// 2. Text / Markdown / Code / JSON → Real Multi-page PDF
+async function convertTextToPdf(baseName, text, options = {}) {
+  const pdfDoc = await PDFDocument.create();
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const monoFont = await pdfDoc.embedFont(StandardFonts.Courier);
 
+  const orientation = options.orientation || 'portrait';
+  const isA4 = options.pageSize !== 'letter';
+  const pageWidth = orientation === 'landscape' ? (isA4 ? 841.89 : 792) : (isA4 ? 595.28 : 612);
+  const pageHeight = orientation === 'landscape' ? (isA4 ? 595.28 : 612) : (isA4 ? 841.89 : 792);
+
+  const margin = 48;
+  const fontSize = 10;
+  const lineHeight = 14;
+  const maxLineChars = Math.floor((pageWidth - margin * 2) / 6);
+
+  let page = pdfDoc.addPage([pageWidth, pageHeight]);
+  let y = pageHeight - margin;
+  let pageNum = 1;
+
+  const drawHeader = () => {
+    if (options.includeHeader !== false) {
+      page.drawText(baseName, { x: margin, y: pageHeight - 30, size: 9, font: boldFont, color: rgb(0.35, 0.35, 0.45) });
+      page.drawLine({
+        start: { x: margin, y: pageHeight - 34 },
+        end: { x: pageWidth - margin, y: pageHeight - 34 },
+        thickness: 0.5,
+        color: rgb(0.8, 0.8, 0.85)
+      });
+    }
+  };
+
+  const drawFooter = () => {
+    page.drawText(`Page ${pageNum}`, { x: pageWidth / 2 - 16, y: 24, size: 8, font, color: rgb(0.5, 0.5, 0.5) });
+  };
+
+  drawHeader();
+
+  // Title Header on Page 1
+  page.drawText(baseName, { x: margin, y, size: 16, font: boldFont, color: rgb(0.1, 0.1, 0.15) });
+  y -= 26;
+
+  const rawLines = (text || '').split('\n');
+  for (const rawLine of rawLines) {
+    const words = rawLine.split(' ');
+    let currentLine = '';
+
+    for (const word of words) {
+      if ((currentLine + ' ' + word).trim().length <= maxLineChars) {
+        currentLine = (currentLine + ' ' + word).trim();
+      } else {
+        if (y < margin + 25) {
+          drawFooter();
+          pageNum++;
+          page = pdfDoc.addPage([pageWidth, pageHeight]);
+          drawHeader();
+          y = pageHeight - margin - 20;
+        }
+        page.drawText(currentLine || ' ', { x: margin, y, size: fontSize, font: monoFont, color: rgb(0.18, 0.18, 0.22) });
+        y -= lineHeight;
+        currentLine = word;
+      }
+    }
+
+    if (currentLine.length > 0 || rawLine === '') {
+      if (y < margin + 25) {
+        drawFooter();
+        pageNum++;
+        page = pdfDoc.addPage([pageWidth, pageHeight]);
+        drawHeader();
+        y = pageHeight - margin - 20;
+      }
+      page.drawText(currentLine || ' ', { x: margin, y, size: fontSize, font: monoFont, color: rgb(0.18, 0.18, 0.22) });
+      y -= lineHeight;
+    }
+  }
+
+  drawFooter();
+  const pdfBytes = await pdfDoc.save();
+  return new Blob([pdfBytes], { type: 'application/pdf' });
+}
+
+// 3. Text / Markdown / Code → Real Valid OpenXML DOCX Package
 async function generateRealDocx(baseName, text) {
   const zip = new JSZip();
-  
+
   zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -137,315 +231,373 @@ async function generateRealDocx(baseName, text) {
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>`);
 
-  const safeText = text || '';
-  const paragraphs = safeText.split('\n').map(p => {
-    const clean = p.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    return `<w:p><w:r><w:t>${clean || ' '}</w:t></w:r></w:p>`;
+  const lines = (text || '').split('\n');
+  const paragraphs = lines.map(line => {
+    const clean = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const isHeader = line.startsWith('# ') || line.startsWith('## ');
+    const sz = line.startsWith('# ') ? '32' : line.startsWith('## ') ? '26' : '22';
+    const bold = isHeader ? '<w:b/>' : '';
+    const textContent = clean.replace(/^#+\s*/, '') || ' ';
+    return `<w:p>
+      <w:pPr><w:rPr>${bold}<w:sz w:val="${sz}"/></w:rPr></w:pPr>
+      <w:r><w:rPr>${bold}<w:sz w:val="${sz}"/></w:rPr><w:t xml:space="preserve">${textContent}</w:t></w:r>
+    </w:p>`;
   }).join('');
 
   const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>
     <w:p>
-      <w:pPr><w:jc w:val="center"/></w:pPr>
+      <w:pPr><w:jc w:val="center"/><w:rPr><w:b/><w:sz w:val="36"/></w:rPr></w:pPr>
       <w:r><w:rPr><w:b/><w:sz w:val="36"/></w:rPr><w:t>${baseName}</w:t></w:r>
     </w:p>
     <w:p><w:r><w:t> </w:t></w:r></w:p>
     ${paragraphs}
     <w:p><w:r><w:t> </w:t></w:r></w:p>
     <w:p>
-      <w:r><w:rPr><w:i/><w:color w:val="888888"/></w:rPr><w:t>Converted by Storage Bank Vault Converter on ${new Date().toLocaleDateString()}</w:t></w:r>
+      <w:pPr><w:rPr><w:i/><w:color w:val="888888"/><w:sz w:val="18"/></w:rPr></w:pPr>
+      <w:r><w:rPr><w:i/><w:color w:val="888888"/><w:sz w:val="18"/></w:rPr><w:t>Converted by StorageBank Format Studio &bull; ${new Date().toLocaleDateString()}</w:t></w:r>
     </w:p>
   </w:body>
 </w:document>`;
 
   zip.file('word/document.xml', docXml);
-  return await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  return await zip.generateAsync({
+    type: 'blob',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  });
 }
 
-async function generateRealPdf(baseName, text) {
-  try {
-    const pdfDoc = await PDFDocument.create();
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+// 4. Image ↔ Image (PNG, JPEG, WEBP) via Canvas
+async function convertImageToImage(blob, targetFormat, options = {}) {
+  const quality = options.quality ? options.quality / 100 : 0.92;
+  const mime = (targetFormat === 'jpeg' || targetFormat === 'jpg')
+    ? 'image/jpeg'
+    : targetFormat === 'webp'
+    ? 'image/webp'
+    : 'image/png';
 
-    let page = pdfDoc.addPage([612, 792]);
-    let y = 740;
-
-    page.drawText(baseName, { x: 50, y, size: 16, font: boldFont, color: rgb(0.1, 0.1, 0.25) });
-    y -= 30;
-
-    const lines = (text || '').split('\n');
-    for (const line of lines) {
-      if (y < 60) {
-        page = pdfDoc.addPage([612, 792]);
-        y = 740;
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      if (mime === 'image/jpeg') {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
-      const truncated = line.substring(0, 95);
-      page.drawText(truncated || ' ', { x: 50, y, size: 10, font, color: rgb(0.2, 0.2, 0.2) });
-      y -= 15;
-    }
-
-    const bytes = await pdfDoc.save();
-    return new Blob([bytes], { type: 'application/pdf' });
-  } catch {
-    return new Blob([text], { type: 'application/pdf' });
-  }
+      ctx.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(b => {
+        if (b) resolve(b);
+        else reject(new Error('Canvas export failed'));
+      }, mime, quality);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Failed to load source image'));
+    };
+    img.src = url;
+  });
 }
 
-// ─── Smooth animated progress ─────────────────────────────────────────────────
-function useProgress() {
-  const [progress, setProgress] = useState(0);
-  const ref = useRef(null);
+// 5. JSON ↔ CSV Converters
+function convertJsonToCsv(jsonText, delimiter = ',') {
+  const parsed = JSON.parse(jsonText);
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+  if (items.length === 0) return 'empty';
 
-  const animateTo = (target, duration = 300) => {
-    if (ref.current) clearInterval(ref.current);
-    const start = Date.now();
-    ref.current = setInterval(() => {
-      const elapsed = Date.now() - start;
-      const pct = Math.min(1, elapsed / duration);
-      setProgress(prev => {
-        const next = prev + (target - prev) * pct;
-        if (pct >= 1) { clearInterval(ref.current); return target; }
-        return next;
-      });
-    }, 16);
+  const headers = Array.from(new Set(items.flatMap(obj => typeof obj === 'object' && obj !== null ? Object.keys(obj) : ['value'])));
+  const escapeCell = val => {
+    if (val === null || val === undefined) return '';
+    const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+    if (str.includes(delimiter) || str.includes('"') || str.includes('\n')) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
   };
 
-  const reset = () => { if (ref.current) clearInterval(ref.current); setProgress(0); };
-  return { progress, animateTo, reset };
+  const rows = [
+    headers.map(escapeCell).join(delimiter),
+    ...items.map(row => {
+      if (typeof row !== 'object' || row === null) return escapeCell(row);
+      return headers.map(h => escapeCell(row[h])).join(delimiter);
+    })
+  ];
+  return rows.join('\n');
 }
 
-// ─── Format list ──────────────────────────────────────────────────────────────
-const FORMATS = [
-  { key: 'pdf',  label: 'PDF Document',      ext: '.pdf',  color: '#ef4444', group: 'doc' },
-  { key: 'docx', label: 'Word Document',     ext: '.docx', color: '#3b82f6', group: 'doc' },
-  { key: 'html', label: 'HTML Web Page',     ext: '.html', color: '#f97316', group: 'doc' },
-  { key: 'txt',  label: 'Plain Text',        ext: '.txt',  color: '#10b981', group: 'doc' },
-  { key: 'md',   label: 'Markdown',          ext: '.md',   color: '#8b5cf6', group: 'doc' },
-  { key: 'json', label: 'JSON Data',         ext: '.json', color: '#ec4899', group: 'doc' },
-  { key: 'csv',  label: 'CSV Spreadsheet',   ext: '.csv',  color: '#14b8a6', group: 'doc' },
-  { key: 'png',  label: 'PNG Image',         ext: '.png',  color: '#06b6d4', group: 'img' },
-  { key: 'jpeg', label: 'JPEG Image',        ext: '.jpg',  color: '#f59e0b', group: 'img' },
-  { key: 'webp', label: 'WebP Image',        ext: '.webp', color: '#a855f7', group: 'img' },
-];
-
-function formatSize(bytes) {
-  if (!bytes || bytes === 0) return '0 B';
-  const k = 1024, sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+function convertCsvToJson(csvText, delimiter = ',') {
+  const lines = csvText.trim().split(/\r?\n/).filter(Boolean);
+  if (lines.length === 0) return '[]';
+  const headers = lines[0].split(delimiter).map(h => h.trim().replace(/^"|"$/g, ''));
+  const rows = lines.slice(1).map(line => {
+    const values = [];
+    let insideQuotes = false;
+    let curr = '';
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        insideQuotes = !insideQuotes;
+      } else if (char === delimiter && !insideQuotes) {
+        values.push(curr.trim());
+        curr = '';
+      } else {
+        curr += char;
+      }
+    }
+    values.push(curr.trim());
+    const obj = {};
+    headers.forEach((h, i) => {
+      let val = values[i] || '';
+      if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1).replace(/""/g, '"');
+      if (/^-?\d+(\.\d+)?$/.test(val)) val = Number(val);
+      else if (val === 'true') val = true;
+      else if (val === 'false') val = false;
+      obj[h] = val;
+    });
+    return obj;
+  });
+  return JSON.stringify(rows, null, 2);
 }
 
-function timeAgo(iso) {
-  if (!iso) return '';
-  const d = Math.floor((Date.now() - new Date(iso)) / 1000);
-  if (d < 60) return `${d}s ago`;
-  if (d < 3600) return `${Math.floor(d / 60)}m ago`;
-  if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
-  return new Date(iso).toLocaleDateString();
+// 6. Markdown → Semantic HTML
+function convertMarkdownToHtml(baseName, mdText) {
+  const safeText = mdText || '';
+  const lines = safeText.split('\n');
+  const bodyHtml = lines.map(line => {
+    if (line.startsWith('# ')) return `<h1>${line.slice(2)}</h1>`;
+    if (line.startsWith('## ')) return `<h2>${line.slice(3)}</h2>`;
+    if (line.startsWith('### ')) return `<h3>${line.slice(4)}</h3>`;
+    if (line.startsWith('- ') || line.startsWith('* ')) return `<li>${line.slice(2)}</li>`;
+    if (line.startsWith('> ')) return `<blockquote>${line.slice(2)}</blockquote>`;
+    if (line.startsWith('```')) return line.replace(/```[a-z]*/g, '');
+    if (!line.trim()) return '<br/>';
+    return `<p>${line.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\*(.*?)\*/g, '<em>$1</em>')}</p>`;
+  }).join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>${baseName}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #1e293b; background: #ffffff; }
+    h1, h2, h3 { color: #0f172a; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; }
+    blockquote { border-left: 4px solid #6366f1; padding-left: 14px; margin: 16px 0; color: #64748b; font-style: italic; }
+    code, pre { font-family: monospace; background: #f1f5f9; padding: 2px 6px; border-radius: 4px; }
+    footer { margin-top: 40px; padding-top: 14px; border-top: 1px solid #e2e8f0; font-size: 0.8rem; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  ${bodyHtml}
+  <footer>Converted by StorageBank Format Studio &bull; ${new Date().toLocaleDateString()}</footer>
+</body>
+</html>`;
 }
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// ── MAIN COMPONENT ─────────────────────────────────────────────────────────────
 export function ConverterStudioPage() {
-  const { files, uploadFiles, deletePermanently, addToast, logActivity } = useStorage();
-  const { user } = useAuth(); // always use the real auth user, not the storage context
+  const { files, uploadFiles, addToast, logActivity } = useStorage();
 
-  const [selectedFile,      setSelectedFile]      = useState(null);
-  const [targetFormat,      setTargetFormat]      = useState('pdf');
-  const [converting,        setConverting]        = useState(false);
-  const [vaultSearch,       setVaultSearch]       = useState('');
-  const [vaultFilterCat,    setVaultFilterCat]    = useState('all');
-  const [previewItem,       setPreviewItem]       = useState(null);
-  // Session history persisted in localStorage (metadata) + IDB (binary blobs)
-  const [sessionItems,      setSessionItems]      = useState(loadSession);
-  const { progress, animateTo, reset: resetProgress } = useProgress();
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [targetFormat, setTargetFormat] = useState('pdf');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [converting, setConverting] = useState(false);
+  const [vaultSearch, setVaultSearch] = useState('');
+  const [previewItem, setPreviewItem] = useState(null);
+  const [lastConvertedItem, setLastConvertedItem] = useState(null);
 
-  // Persist session metadata to localStorage on every change
-  useEffect(() => { saveSession(sessionItems); }, [sessionItems]);
+  // Conversion Options State
+  const [pdfOrientation, setPdfOrientation] = useState('portrait');
+  const [pdfPageSize, setPdfPageSize] = useState('a4');
+  const [pdfIncludeHeader, setPdfIncludeHeader] = useState(true);
+  const [imageQuality, setImageQuality] = useState(90);
+  const [csvDelimiter, setCsvDelimiter] = useState(',');
+  const [jsonPretty, setJsonPretty] = useState(true);
 
-  // On mount: reload blobs from IDB and reattach to session items
+  // Session items
+  const [sessionItems, setSessionItems] = useState(loadSession);
+
+  useEffect(() => {
+    saveSession(sessionItems);
+  }, [sessionItems]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const stored = await getAllConvertedBlobs();
       if (cancelled || stored.length === 0) return;
-      // Build id → File map
       const blobMap = {};
-      stored.forEach(entry => { if (entry?.id && entry?.file) blobMap[entry.id] = entry.file; });
+      stored.forEach(entry => {
+        if (entry?.id && entry?.file) blobMap[entry.id] = entry.file;
+      });
       setSessionItems(prev => prev.map(item =>
         blobMap[item.id] ? { ...item, fileObj: blobMap[item.id] } : item
       ));
     })();
     return () => { cancelled = true; };
-  }, []); // run once on mount
+  }, []);
 
-  // ── Vault files filtered for left panel ──────────────────────────────────
   const vaultFiles = useMemo(() => files.filter(f => {
     if (f.inTrash) return false;
-    const matchSearch = f.name.toLowerCase().includes(vaultSearch.toLowerCase());
-    const matchCat    = vaultFilterCat === 'all' || f.category === vaultFilterCat;
-    return matchSearch && matchCat;
-  }), [files, vaultSearch, vaultFilterCat]);
+    return f.name.toLowerCase().includes(vaultSearch.toLowerCase());
+  }), [files, vaultSearch]);
 
-  // ── Merged real-time table (vault converted + session) ───────────────────
-  const tableItems = useMemo(() => {
-    // Files in vault tagged 'converted'
-    const fromVault = files
-      .filter(f => !f.inTrash && f.tags?.includes('converted'))
-      .map(f => ({
-        id:            f.id,
-        originalName:  f.name.replace(/_converted\.[a-z0-9]+$/i, ''),
-        convertedName: f.name,
-        format:        (f.name.split('.').pop() || 'file').toLowerCase(),
-        size:          f.size,
-        timestamp:     f.createdAt,
-        fileObj:       null,
-        savedToVault:  true,
-        fromVault:     true,
-      }));
+  const filteredFormats = useMemo(() => {
+    if (categoryFilter === 'all') return FORMATS;
+    return FORMATS.filter(f => f.category === categoryFilter);
+  }, [categoryFilter]);
 
-    // Session items not yet in vault (merge avoiding duplicates)
-    const merged = [...sessionItems];
-    fromVault.forEach(v => {
-      if (!merged.some(m => m.convertedName === v.convertedName)) merged.push(v);
-    });
-    return merged.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-  }, [files, sessionItems]);
-
-  // ── Select vault file ─────────────────────────────────────────────────────
   const handleSelectVaultFile = (f) => {
-    setSelectedFile({ id: f.id, name: f.name, size: f.size, type: f.type, blob: f.blob, content: f.content,
-      category: f.category || (f.type?.startsWith('image/') ? 'image' : 'document') });
+    setSelectedFile({
+      id: f.id,
+      name: f.name,
+      size: f.size,
+      type: f.type,
+      blob: f.blob,
+      content: f.content,
+      category: f.category || (f.type?.startsWith('image/') ? 'image' : 'document')
+    });
+    setLastConvertedItem(null);
   };
 
-  // ── Upload computer file ──────────────────────────────────────────────────
   const handleSelectLocal = (e) => {
     const f = e.target.files?.[0];
     if (!f) return;
-    setSelectedFile({ id: `local-${Date.now()}`, name: f.name, size: f.size, type: f.type, blob: f,
-      category: f.type.startsWith('image/') ? 'image' : 'document' });
+    setSelectedFile({
+      id: `local-${Date.now()}`,
+      name: f.name,
+      size: f.size,
+      type: f.type,
+      blob: f,
+      category: f.type.startsWith('image/') ? 'image' : 'document'
+    });
+    setLastConvertedItem(null);
     e.target.value = '';
   };
 
-  // ── REAL CONVERSION ENGINE ────────────────────────────────────────────────
+  // ── REAL CONVERSION EXECUTION ────────────────────────────────────────────────
   const executeConversion = async () => {
     if (!selectedFile || converting) return;
     setConverting(true);
-    resetProgress();
-    animateTo(15, 200);
 
     try {
-      const fmt      = targetFormat.toLowerCase();
+      const fmt = targetFormat.toLowerCase();
       const baseName = selectedFile.name.replace(/\.[^.]+$/, '');
-      const newName  = `${baseName}_converted.${fmt === 'jpeg' ? 'jpg' : fmt}`;
-      const mime     = MIME[fmt] || 'application/octet-stream';
-      let   blob     = selectedFile.blob;
-      let   outBlob;
+      const newName = `${baseName}.${fmt === 'jpeg' ? 'jpg' : fmt}`;
+      const mime = MIME_MAP[fmt] || 'application/octet-stream';
+      let outBlob;
 
-      animateTo(35, 300);
+      const isSourceImage = selectedFile.category === 'image' || selectedFile.type?.startsWith('image/');
+      const isTargetImage = ['png', 'jpeg', 'jpg', 'webp'].includes(fmt);
 
-      const isImage = selectedFile.category === 'image' || selectedFile.type?.startsWith('image/');
-      const isImageTarget = ['png', 'jpeg', 'jpg', 'webp'].includes(fmt);
-
-      if (isImage && blob) {
-        // ── Real image conversion via HTML5 Canvas ──
-        animateTo(55, 400);
-        if (isImageTarget || fmt === 'pdf') {
-          outBlob = await convertImage(blob, fmt);
-        } else {
-          // image → text format: embed as data URL in the output
-          const dataUrl = await new Promise(res => {
-            const fr = new FileReader();
-            fr.onload = e => res(e.target.result);
-            fr.readAsDataURL(blob);
-          });
-          const textOut = buildTextOutput(fmt, baseName,
-            `[Image Source: ${selectedFile.name}]\nData URL: ${dataUrl.substring(0, 200)}...`);
-          outBlob = new Blob([textOut], { type: mime });
-        }
-      } else {
-        // ── Real text/document conversion ──
-        animateTo(50, 400);
-        let text = '';
-        if (blob) {
-          text = await readBlobText(blob);
-        } else if (selectedFile.content) {
-          text = selectedFile.content;
-        } else {
-          text = `[No text content found in ${selectedFile.name}]`;
-        }
-        animateTo(75, 300);
-
-        if (isImageTarget) {
-          // text → image: render on canvas
-          const canvas = document.createElement('canvas');
-          canvas.width = 900; canvas.height = 1200;
-          const ctx = canvas.getContext('2d');
-          ctx.fillStyle = '#1a1a2e';
-          ctx.fillRect(0, 0, 900, 1200);
-          ctx.fillStyle = '#e2e8f0';
-          ctx.font = 'bold 22px system-ui';
-          ctx.fillText(baseName, 40, 50);
-          ctx.font = '13px monospace';
-          ctx.fillStyle = '#94a3b8';
-          const words = text.split('\n').slice(0, 70);
-          words.forEach((line, i) => ctx.fillText(line.substring(0, 90), 40, 90 + i * 16));
-          outBlob = await new Promise(res => canvas.toBlob(res, MIME[fmt] || 'image/png', 0.92));
-        } else if (fmt === 'docx') {
-          outBlob = await generateRealDocx(baseName, text);
-        } else if (fmt === 'pdf') {
-          outBlob = await generateRealPdf(baseName, text);
-        } else {
-          const textOut = buildTextOutput(fmt, baseName, text);
-          outBlob = new Blob([textOut], { type: mime });
+      // Extract text content if available
+      let textContent = '';
+      if (!isSourceImage) {
+        if (typeof selectedFile.content === 'string') {
+          textContent = selectedFile.content;
+        } else if (selectedFile.blob) {
+          textContent = await selectedFile.blob.text();
         }
       }
 
-      animateTo(100, 200);
-      await new Promise(r => setTimeout(r, 350)); // let bar reach 100%
+      // Route to real conversion engines
+      if (fmt === 'pdf') {
+        if (isSourceImage && selectedFile.blob) {
+          outBlob = await convertImageToPdf(selectedFile.blob, baseName, {
+            orientation: pdfOrientation,
+            pageSize: pdfPageSize,
+            quality: imageQuality
+          });
+        } else {
+          outBlob = await convertTextToPdf(baseName, textContent, {
+            orientation: pdfOrientation,
+            pageSize: pdfPageSize,
+            includeHeader: pdfIncludeHeader
+          });
+        }
+      } else if (fmt === 'docx') {
+        outBlob = await generateRealDocx(baseName, textContent);
+      } else if (isTargetImage) {
+        if (isSourceImage && selectedFile.blob) {
+          outBlob = await convertImageToImage(selectedFile.blob, fmt, { quality: imageQuality });
+        } else {
+          // Render text content onto canvas
+          const canvas = document.createElement('canvas');
+          canvas.width = 1200;
+          canvas.height = 1600;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#0f1117';
+          ctx.fillRect(0, 0, 1200, 1600);
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 36px monospace';
+          ctx.fillText(baseName, 60, 80);
+          ctx.font = '20px monospace';
+          ctx.fillStyle = '#94a3b8';
+          const lines = (textContent || '').split('\n').slice(0, 50);
+          lines.forEach((l, i) => ctx.fillText(l.slice(0, 80), 60, 140 + i * 28));
+          outBlob = await new Promise(res => canvas.toBlob(res, MIME_MAP[fmt], imageQuality / 100));
+        }
+      } else if (fmt === 'html') {
+        const htmlStr = convertMarkdownToHtml(baseName, textContent);
+        outBlob = new Blob([htmlStr], { type: 'text/html' });
+      } else if (fmt === 'csv') {
+        const csvStr = selectedFile.name.endsWith('.json')
+          ? convertJsonToCsv(textContent, csvDelimiter)
+          : textContent;
+        outBlob = new Blob([csvStr], { type: 'text/csv' });
+      } else if (fmt === 'json') {
+        const jsonStr = (selectedFile.name.endsWith('.csv') || textContent.includes(','))
+          ? convertCsvToJson(textContent, csvDelimiter)
+          : (jsonPretty ? JSON.stringify(JSON.parse(textContent || '{}'), null, 2) : textContent);
+        outBlob = new Blob([jsonStr], { type: 'application/json' });
+      } else if (fmt === 'md' || fmt === 'txt') {
+        outBlob = new Blob([textContent], { type: MIME_MAP[fmt] });
+      } else {
+        outBlob = new Blob([textContent], { type: mime });
+      }
 
       const fileObj = new File([outBlob], newName, { type: mime });
-      const itemId  = `conv-${Date.now()}`;
+      const itemId = `conv-${Date.now()}`;
 
-      // Persist blob to IndexedDB so it survives page refresh
-      saveConvertedBlob(itemId, fileObj);
+      // Persist blob to IndexedDB
+      await saveConvertedBlob(itemId, fileObj);
 
       const newItem = {
-        id:            itemId,
-        originalName:  selectedFile.name,
+        id: itemId,
+        originalName: selectedFile.name,
         convertedName: newName,
-        format:        fmt,
-        size:          outBlob.size,
-        timestamp:     new Date().toISOString(),
+        format: fmt,
+        size: outBlob.size,
+        timestamp: new Date().toISOString(),
         fileObj,
-        savedToVault:  false,
-        fromVault:     false,
+        savedToVault: false,
+        fromVault: false
       };
 
       setSessionItems(prev => [newItem, ...prev]);
-      addToast(`✅ Converted "${selectedFile.name}" → .${fmt.toUpperCase()}`, 'success');
-      logActivity('CONVERT', `Converted → ${newName}`, 'success');
+      setLastConvertedItem(newItem);
+      addToast(`Converted "${selectedFile.name}" to .${fmt.toUpperCase()}`, 'success');
+      logActivity('CONVERT', `Converted to ${newName}`, 'success');
 
     } catch (err) {
       console.error('Conversion failed:', err);
-      addToast(`❌ Conversion failed: ${err.message}`, 'error');
+      addToast(`Conversion error: ${err.message}`, 'error');
     } finally {
       setConverting(false);
-      setTimeout(resetProgress, 800);
     }
   };
 
-  // ── Save to Vault ─────────────────────────────────────────────────────────
   const handleSaveToVault = async (item) => {
-    if (!user) { addToast('Please sign in to save to vault.', 'error'); return; }
-    if (item.savedToVault) { addToast('Already saved in vault!', 'info'); return; }
-
     let fileToSave = item.fileObj;
-    // Try fetching from IDB if not in memory
     if (!fileToSave) fileToSave = await getConvertedBlob(item.id);
     if (!fileToSave) {
-      addToast('File data not found — please re-convert the file first.', 'warning');
+      addToast('File data not found — please re-convert.', 'warning');
       return;
     }
 
@@ -459,139 +611,151 @@ export function ConverterStudioPage() {
 
     await uploadFiles([blobToSave], null);
     setSessionItems(prev => prev.map(c => c.id === item.id ? { ...c, savedToVault: true, fileObj: fileToSave } : c));
-    addToast(`📁 "${item.convertedName}" saved to vault!`, 'success');
+    if (lastConvertedItem?.id === item.id) {
+      setLastConvertedItem(prev => ({ ...prev, savedToVault: true }));
+    }
+    addToast(`Saved "${item.convertedName}" to Vault!`, 'success');
   };
 
-  // ── Download ──────────────────────────────────────────────────────────────
   const handleDownload = async (item) => {
     let file = item.fileObj;
-    // Try IDB if not in memory
     if (!file) file = await getConvertedBlob(item.id);
     if (!file) {
-      addToast('File data not found — please re-convert the file first.', 'warning');
+      addToast('File data not found — please re-convert.', 'warning');
       return;
     }
-    // Reattach to state so future actions work without IDB lookup
-    if (!item.fileObj) setSessionItems(prev => prev.map(c => c.id === item.id ? { ...c, fileObj: file } : c));
     const url = URL.createObjectURL(file);
-    const a   = document.createElement('a');
-    a.href = url; a.download = item.convertedName; a.click();
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = item.convertedName;
+    a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    addToast(`⬇️ Downloading "${item.convertedName}"`, 'info');
   };
 
-  // ── Delete from history ───────────────────────────────────────────────────
   const handleDelete = (item) => {
     setSessionItems(prev => prev.filter(c => c.id !== item.id));
-    // Clean up IDB blob too
     deleteConvertedBlob(item.id);
-    if (item.savedToVault && !item.fromVault) deletePermanently(item.id, false);
-    addToast('Removed from converted history.', 'info');
+    if (lastConvertedItem?.id === item.id) setLastConvertedItem(null);
+    addToast('Removed from history.', 'info');
   };
-
-  // ── Preview ───────────────────────────────────────────────────────────────
-  const handlePreview = async (item) => {
-    let file = item.fileObj;
-    if (!file) file = await getConvertedBlob(item.id);
-    if (!file) { addToast('Re-convert the file to preview it.', 'warning'); return; }
-    setPreviewItem({ ...item, fileObj: file });
-  };
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // RENDER
-  // ─────────────────────────────────────────────────────────────────────────────
-  const selectedFmt = FORMATS.find(f => f.key === targetFormat) || FORMATS[0];
 
   return (
-    <div style={{ padding: '8px', maxWidth: '1400px', margin: '0 auto' }}>
+    <div style={{ maxWidth: '1360px', margin: '0 auto', padding: '16px' }}>
 
-      {/* ── Header ────────────────────────────────────────────────────────── */}
+      {/* Header */}
       <div className="glass-panel" style={{
-        borderRadius: 'var(--radius-lg)', padding: '20px 28px', marginBottom: '20px',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px'
+        borderRadius: '10px',
+        padding: '18px 24px',
+        marginBottom: '20px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: '12px'
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
           <div style={{
-            width: '48px', height: '48px', borderRadius: '14px',
-            background: 'var(--accent-gradient)', display: 'flex', alignItems: 'center',
-            justifyContent: 'center', boxShadow: '0 6px 20px var(--accent-glow)'
+            width: '42px',
+            height: '42px',
+            borderRadius: '10px',
+            background: 'var(--accent-primary)',
+            color: '#fff',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
           }}>
-            <RefreshCw size={24} color="#fff" />
+            <RefreshCw size={20} />
           </div>
           <div>
-            <h1 style={{ fontSize: '1.5rem', fontWeight: '800', marginBottom: '2px' }}>
+            <h1 style={{ fontSize: '1.2rem', fontWeight: '700', margin: 0, color: 'var(--text-primary)' }}>
               Format Converter Studio
             </h1>
-            <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-              Real client-side conversion — images via Canvas, documents via FileReader. All live, all in-browser.
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
+              Real browser-native conversion with live formatting options and vault sync.
             </p>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <span className="badge badge-emerald" style={{ fontSize: '0.75rem', padding: '5px 12px' }}>
-            <Zap size={12} /> Live Engine
-          </span>
-          <span className="badge badge-cyan" style={{ fontSize: '0.75rem', padding: '5px 12px' }}>
-            {tableItems.length} converted
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: '0.74rem', padding: '3px 10px', borderRadius: '20px', background: 'var(--bg-input)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}>
+            {sessionItems.length} converted files
           </span>
         </div>
       </div>
 
-      {/* ── Main Grid ─────────────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: '20px', marginBottom: '24px' }}>
+      {/* Main Grid: Vault Picker & Converter Options */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 340px) 1fr', gap: '20px', marginBottom: '24px' }}>
 
-        {/* Left — Vault file selector */}
+        {/* Left Column: Select File from Vault / Computer */}
         <div className="glass-panel" style={{
-          borderRadius: 'var(--radius-lg)', padding: '18px',
-          display: 'flex', flexDirection: 'column', height: '620px'
+          borderRadius: '10px',
+          padding: '16px',
+          display: 'flex',
+          flexDirection: 'column',
+          maxHeight: '680px'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
-            <h3 style={{ fontSize: '0.9rem', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '7px' }}>
-              <FileText size={16} color="var(--accent-primary)" /> Vault Files
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+            <h3 style={{ fontSize: '0.88rem', fontWeight: '600', margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <FileText size={15} color="var(--accent-primary)" /> Select Source File
             </h3>
-            <span className="badge badge-indigo" style={{ fontSize: '0.72rem' }}>{vaultFiles.length}</span>
+            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{vaultFiles.length} available</span>
           </div>
 
-          {/* Category tabs */}
-          <div style={{ display: 'flex', gap: '3px', overflowX: 'auto', marginBottom: '10px', paddingBottom: '3px' }}>
-            {['all','image','document','video','audio','code'].map(cat => (
-              <button key={cat} onClick={() => setVaultFilterCat(cat)} style={{
-                padding: '3px 9px', borderRadius: 'var(--radius-full)', border: 'none', cursor: 'pointer',
-                fontSize: '0.7rem', fontWeight: '600', whiteSpace: 'nowrap',
-                background: vaultFilterCat === cat ? 'var(--accent-primary)' : 'var(--bg-input)',
-                color: vaultFilterCat === cat ? '#fff' : 'var(--text-muted)'
-              }}>{cat === 'all' ? 'All' : cat.charAt(0).toUpperCase() + cat.slice(1)}</button>
-            ))}
+          {/* Search Input */}
+          <div style={{ position: 'relative', marginBottom: '12px' }}>
+            <Search size={13} style={{ position: 'absolute', left: '10px', top: '9px', color: 'var(--text-muted)' }} />
+            <input
+              type="text"
+              className="input-text"
+              placeholder="Filter vault files..."
+              value={vaultSearch}
+              onChange={e => setVaultSearch(e.target.value)}
+              style={{ paddingLeft: '32px', fontSize: '0.8rem', padding: '7px 10px 7px 32px' }}
+            />
           </div>
 
-          {/* Search */}
-          <div style={{ position: 'relative', marginBottom: '10px' }}>
-            <Search size={13} style={{ position: 'absolute', left: '9px', top: '9px', color: 'var(--text-muted)' }} />
-            <input type="text" className="input-text" placeholder="Search files..."
-              value={vaultSearch} onChange={e => setVaultSearch(e.target.value)}
-              style={{ paddingLeft: '30px', fontSize: '0.8rem', padding: '7px 10px 7px 30px' }} />
-          </div>
-
-          {/* File list */}
-          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          {/* Vault Files List */}
+          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {vaultFiles.length === 0 ? (
               <div style={{ padding: '30px 10px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                No files in vault yet.<br/>Upload files from the main vault view.
+                No files matching search in vault.
               </div>
             ) : vaultFiles.map(f => {
-              const active = selectedFile?.id === f.id;
+              const isSelected = selectedFile?.id === f.id;
+              const fStyle = getFileColorStyle(f);
               return (
-                <div key={f.id} onClick={() => handleSelectVaultFile(f)} style={{
-                  padding: '9px 11px', borderRadius: 'var(--radius-md)', cursor: 'pointer',
-                  background: active ? 'rgba(99,102,241,0.18)' : 'var(--bg-input)',
-                  border: active ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
-                  transition: 'var(--transition-fast)'
-                }}>
-                  <div style={{ fontWeight: '600', fontSize: '0.82rem', color: 'var(--text-primary)',
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem',
-                    color: 'var(--text-muted)', marginTop: '2px' }}>
-                    <span style={{ textTransform: 'capitalize' }}>{f.category}</span>
+                <div
+                  key={f.id}
+                  onClick={() => handleSelectVaultFile(f)}
+                  style={{
+                    padding: '8px 10px',
+                    borderRadius: '7px',
+                    cursor: 'pointer',
+                    background: isSelected ? 'rgba(99, 102, 241, 0.15)' : 'var(--bg-input)',
+                    border: isSelected ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                    transition: 'var(--transition-fast)'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                    <span style={{
+                      fontSize: '0.62rem',
+                      fontWeight: '700',
+                      padding: '2px 5px',
+                      borderRadius: '4px',
+                      background: fStyle.bg,
+                      color: fStyle.color,
+                      border: `1px solid ${fStyle.border}`,
+                      fontFamily: 'var(--font-mono)',
+                      flexShrink: 0
+                    }}>
+                      {fStyle.label}
+                    </span>
+                    <span style={{ fontWeight: '500', fontSize: '0.82rem', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {f.name}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '4px', paddingLeft: '2px' }}>
+                    <span>{f.category}</span>
                     <span>{formatSize(f.size)}</span>
                   </div>
                 </div>
@@ -599,287 +763,634 @@ export function ConverterStudioPage() {
             })}
           </div>
 
-          {/* Upload from computer */}
-          <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border-subtle)' }}>
-            <button className="btn btn-secondary" onClick={() => document.getElementById('__cvtr_input').click()}
-              style={{ width: '100%', padding: '7px', fontSize: '0.8rem' }}>
-              <Upload size={14} /> Upload Computer File
+          {/* Upload From Computer */}
+          <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border-subtle)' }}>
+            <button
+              className="btn btn-secondary"
+              onClick={() => document.getElementById('__cvtr_file_input').click()}
+              style={{ width: '100%', fontSize: '0.8rem', gap: '6px' }}
+            >
+              <Upload size={14} /> Upload Local Computer File
             </button>
-            <input id="__cvtr_input" type="file" onChange={handleSelectLocal} style={{ display: 'none' }}
-              accept="image/*,text/*,.pdf,.doc,.docx,.json,.csv,.md" />
+            <input
+              id="__cvtr_file_input"
+              type="file"
+              onChange={handleSelectLocal}
+              style={{ display: 'none' }}
+            />
           </div>
         </div>
 
-        {/* Right — format picker + convert button */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+        {/* Right Column: Converter Workspace */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
-          {/* Active source file banner */}
-          <div className="glass-panel" style={{ borderRadius: 'var(--radius-lg)', padding: '18px' }}>
-            <div style={{ fontSize: '0.72rem', fontWeight: '700', color: 'var(--text-muted)',
-              textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>
-              Source File
+          {/* Active Source File Card */}
+          <div className="glass-panel" style={{ borderRadius: '10px', padding: '16px' }}>
+            <div style={{ fontSize: '0.7rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>
+              Active Source
             </div>
             {!selectedFile ? (
-              <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                ← Select a file from your Vault or upload from your computer
+              <div style={{
+                padding: '24px',
+                textAlign: 'center',
+                color: 'var(--text-muted)',
+                fontSize: '0.84rem',
+                border: '1px dashed var(--border-subtle)',
+                borderRadius: '8px'
+              }}>
+                Select a file from your Vault on the left or upload a file from your computer to begin.
               </div>
             ) : (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-                <div>
-                  <div style={{ fontSize: '1rem', fontWeight: '800', color: 'var(--text-primary)' }}>{selectedFile.name}</div>
-                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                    {formatSize(selectedFile.size)} · {selectedFile.category || 'file'}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+                {(() => {
+                  const srcStyle = getFileColorStyle(selectedFile);
+                  return (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                      <span style={{
+                        fontSize: '0.7rem',
+                        fontWeight: '700',
+                        padding: '4px 8px',
+                        borderRadius: '6px',
+                        background: srcStyle.bg,
+                        color: srcStyle.color,
+                        border: `1px solid ${srcStyle.border}`,
+                        fontFamily: 'var(--font-mono)',
+                        flexShrink: 0
+                      }}>
+                        {srcStyle.label}
+                      </span>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: '0.96rem', fontWeight: '700', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {selectedFile.name}
+                        </div>
+                        <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                          {formatSize(selectedFile.size)} &bull; {selectedFile.category || 'File'}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className="badge badge-indigo">Source Ready</span>
+                  <button
+                    className="btn btn-ghost btn-icon"
+                    onClick={() => { setSelectedFile(null); setLastConvertedItem(null); }}
+                    style={{ padding: '4px', height: '26px', width: '26px' }}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Target Format Grid & Customization Options */}
+          <div className="glass-panel" style={{ borderRadius: '10px', padding: '18px' }}>
+
+            {/* Category Filter Pills */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <FileType size={16} color="var(--accent-primary)" />
+                <h3 style={{ fontSize: '0.92rem', fontWeight: '600', margin: 0 }}>Target Format</h3>
+              </div>
+
+              <div style={{ display: 'flex', gap: '4px' }}>
+                {['all', 'document', 'image', 'data'].map(cat => (
+                  <button
+                    key={cat}
+                    onClick={() => setCategoryFilter(cat)}
+                    style={{
+                      padding: '3px 10px',
+                      borderRadius: '16px',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontSize: '0.72rem',
+                      fontWeight: '600',
+                      textTransform: 'capitalize',
+                      background: categoryFilter === cat ? 'var(--accent-primary)' : 'var(--bg-input)',
+                      color: categoryFilter === cat ? '#ffffff' : 'var(--text-muted)'
+                    }}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Formats Grid */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+              gap: '10px',
+              marginBottom: '18px'
+            }}>
+              {filteredFormats.map(fmt => {
+                const isSelected = targetFormat === fmt.key;
+                return (
+                  <div
+                    key={fmt.key}
+                    onClick={() => setTargetFormat(fmt.key)}
+                    style={{
+                      padding: '12px',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      background: isSelected ? 'rgba(99, 102, 241, 0.16)' : 'var(--bg-input)',
+                      border: isSelected ? '2px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                      transition: 'var(--transition-fast)'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+                      <span style={{ fontWeight: '700', fontSize: '0.86rem', color: 'var(--text-primary)' }}>
+                        {fmt.label}
+                      </span>
+                      <span style={{ fontSize: '0.66rem', fontWeight: '800', color: 'var(--accent-primary)' }}>
+                        {fmt.ext}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', lineHeight: '1.3' }}>
+                      {fmt.desc}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Real Format Options Panel with Modern Segmented Controls */}
+            <div style={{
+              background: 'var(--bg-input)',
+              borderRadius: '8px',
+              padding: '14px',
+              border: '1px solid var(--border-subtle)',
+              marginBottom: '18px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem', fontWeight: '700', color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '12px' }}>
+                <SlidersHorizontal size={13} color="var(--accent-primary)" />
+                <span>Conversion Settings ({targetFormat.toUpperCase()})</span>
+              </div>
+
+              {targetFormat === 'pdf' && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', alignItems: 'center' }}>
+                  {/* Page Size Segmented Control */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.74rem', fontWeight: 600 }}>PAGE SIZE:</span>
+                    <div style={{ display: 'flex', gap: '3px', background: 'var(--bg-secondary)', padding: '2px', borderRadius: '7px', border: '1px solid var(--border-subtle)' }}>
+                      {[
+                        { id: 'a4', label: 'A4 Standard' },
+                        { id: 'letter', label: 'US Letter' },
+                        { id: 'fit', label: 'Fit Canvas' }
+                      ].map(sz => (
+                        <button
+                          key={sz.id}
+                          type="button"
+                          onClick={() => setPdfPageSize(sz.id)}
+                          style={{
+                            padding: '4px 10px',
+                            borderRadius: '5px',
+                            fontSize: '0.73rem',
+                            fontWeight: 600,
+                            border: 'none',
+                            cursor: 'pointer',
+                            background: pdfPageSize === sz.id ? 'var(--accent-primary)' : 'transparent',
+                            color: pdfPageSize === sz.id ? '#ffffff' : 'var(--text-secondary)',
+                            transition: 'var(--transition-fast)'
+                          }}
+                        >
+                          {sz.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Orientation Segmented Control */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.74rem', fontWeight: 600 }}>LAYOUT:</span>
+                    <div style={{ display: 'flex', gap: '3px', background: 'var(--bg-secondary)', padding: '2px', borderRadius: '7px', border: '1px solid var(--border-subtle)' }}>
+                      {[
+                        { id: 'portrait', label: 'Portrait' },
+                        { id: 'landscape', label: 'Landscape' }
+                      ].map(or => (
+                        <button
+                          key={or.id}
+                          type="button"
+                          onClick={() => setPdfOrientation(or.id)}
+                          style={{
+                            padding: '4px 10px',
+                            borderRadius: '5px',
+                            fontSize: '0.73rem',
+                            fontWeight: 600,
+                            border: 'none',
+                            cursor: 'pointer',
+                            background: pdfOrientation === or.id ? 'var(--accent-primary)' : 'transparent',
+                            color: pdfOrientation === or.id ? '#ffffff' : 'var(--text-secondary)',
+                            transition: 'var(--transition-fast)'
+                          }}
+                        >
+                          {or.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Header / Page Number Pill */}
+                  <button
+                    type="button"
+                    onClick={() => setPdfIncludeHeader(!pdfIncludeHeader)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '4px 10px',
+                      borderRadius: '7px',
+                      background: pdfIncludeHeader ? 'rgba(99, 102, 241, 0.16)' : 'var(--bg-secondary)',
+                      border: pdfIncludeHeader ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                      color: pdfIncludeHeader ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                      fontSize: '0.73rem',
+                      fontWeight: 600,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <Check size={12} opacity={pdfIncludeHeader ? 1 : 0.4} />
+                    <span>Header &amp; Page Numbers</span>
+                  </button>
+                </div>
+              )}
+
+              {['jpeg', 'jpg', 'webp'].includes(targetFormat) && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.74rem', fontWeight: 600 }}>COMPRESSION QUALITY</span>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--accent-primary)' }}>{imageQuality}%</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', gap: '3px', background: 'var(--bg-secondary)', padding: '2px', borderRadius: '7px', border: '1px solid var(--border-subtle)' }}>
+                      {[
+                        { q: 70, label: '70% Web' },
+                        { q: 85, label: '85% Balanced' },
+                        { q: 95, label: '95% High' }
+                      ].map(p => (
+                        <button
+                          key={p.q}
+                          type="button"
+                          onClick={() => setImageQuality(p.q)}
+                          style={{
+                            padding: '4px 9px',
+                            borderRadius: '5px',
+                            fontSize: '0.72rem',
+                            fontWeight: 600,
+                            border: 'none',
+                            cursor: 'pointer',
+                            background: imageQuality === p.q ? 'var(--accent-primary)' : 'transparent',
+                            color: imageQuality === p.q ? '#ffffff' : 'var(--text-secondary)'
+                          }}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      type="range"
+                      min="50"
+                      max="100"
+                      step="5"
+                      value={imageQuality}
+                      onChange={e => setImageQuality(Number(e.target.value))}
+                      style={{ flex: 1, minWidth: '130px', accentColor: 'var(--accent-primary)', height: '4px' }}
+                    />
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <span className="badge badge-indigo">Ready</span>
-                  <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: '0.75rem' }}
-                    onClick={() => setSelectedFile(null)}>
-                    <X size={12} /> Clear
-                  </button>
+              )}
+
+              {targetFormat === 'png' && (
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                  PNG utilizes lossless 24-bit canvas encoding with alpha transparency preservation.
                 </div>
-              </div>
-            )}
-          </div>
+              )}
 
-          {/* Format matrix */}
-          <div className="glass-panel" style={{ borderRadius: 'var(--radius-lg)', padding: '20px', flex: 1 }}>
-            <h3 style={{ fontSize: '0.95rem', fontWeight: '700', marginBottom: '14px',
-              display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Sparkles size={16} color="var(--accent-cyan)" /> Target Format
-            </h3>
+              {targetFormat === 'csv' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ color: 'var(--text-muted)', fontSize: '0.74rem', fontWeight: 600 }}>DELIMITER:</span>
+                  <div style={{ display: 'flex', gap: '3px', background: 'var(--bg-secondary)', padding: '2px', borderRadius: '7px', border: '1px solid var(--border-subtle)' }}>
+                    {[
+                      { key: ',', label: 'Comma (,)' },
+                      { key: ';', label: 'Semicolon (;)' },
+                      { key: '\t', label: 'Tab (\\t)' }
+                    ].map(d => (
+                      <button
+                        key={d.key}
+                        type="button"
+                        onClick={() => setCsvDelimiter(d.key)}
+                        style={{
+                          padding: '4px 10px',
+                          borderRadius: '5px',
+                          fontSize: '0.73rem',
+                          fontWeight: 600,
+                          border: 'none',
+                          cursor: 'pointer',
+                          background: csvDelimiter === d.key ? 'var(--accent-primary)' : 'transparent',
+                          color: csvDelimiter === d.key ? '#ffffff' : 'var(--text-secondary)'
+                        }}
+                      >
+                        {d.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-            <div style={{ marginBottom: '12px' }}>
-              <div style={{ fontSize: '0.72rem', fontWeight: '700', color: 'var(--text-muted)',
-                textTransform: 'uppercase', marginBottom: '8px' }}>Documents & Data</div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '8px' }}>
-                {FORMATS.filter(f => f.group === 'doc').map(f => (
-                  <button key={f.key} onClick={() => setTargetFormat(f.key)} style={{
-                    padding: '10px 12px', borderRadius: 'var(--radius-md)', border: 'none', cursor: 'pointer',
-                    textAlign: 'left', transition: 'var(--transition-fast)',
-                    background: targetFormat === f.key ? `${f.color}22` : 'var(--bg-input)',
-                    outline: targetFormat === f.key ? `2px solid ${f.color}` : '1px solid var(--border-subtle)',
-                  }}>
-                    <div style={{ fontSize: '0.9rem', fontWeight: '800', color: f.color }}>{f.ext}</div>
-                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>{f.label}</div>
-                  </button>
-                ))}
-              </div>
+              {targetFormat === 'json' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ color: 'var(--text-muted)', fontSize: '0.74rem', fontWeight: 600 }}>FORMATTING:</span>
+                  <div style={{ display: 'flex', gap: '3px', background: 'var(--bg-secondary)', padding: '2px', borderRadius: '7px', border: '1px solid var(--border-subtle)' }}>
+                    {[
+                      { key: true, label: 'Pretty Print (2-Space)' },
+                      { key: false, label: 'Minified (1-Line)' }
+                    ].map(j => (
+                      <button
+                        key={String(j.key)}
+                        type="button"
+                        onClick={() => setJsonPretty(j.key)}
+                        style={{
+                          padding: '4px 10px',
+                          borderRadius: '5px',
+                          fontSize: '0.73rem',
+                          fontWeight: 600,
+                          border: 'none',
+                          cursor: 'pointer',
+                          background: jsonPretty === j.key ? 'var(--accent-primary)' : 'transparent',
+                          color: jsonPretty === j.key ? '#ffffff' : 'var(--text-secondary)'
+                        }}
+                      >
+                        {j.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {['docx', 'html', 'md', 'txt'].includes(targetFormat) && (
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                  {targetFormat === 'docx' && 'Generates compliant Office Open XML with bold titles and styled paragraph nodes.'}
+                  {targetFormat === 'html' && 'Generates standard HTML5 document with responsive system font typography.'}
+                  {['md', 'txt'].includes(targetFormat) && 'Clean plain-text conversion preserving character encodings and line breaks.'}
+                </div>
+              )}
             </div>
 
-            <div style={{ marginBottom: '18px' }}>
-              <div style={{ fontSize: '0.72rem', fontWeight: '700', color: 'var(--text-muted)',
-                textTransform: 'uppercase', marginBottom: '8px' }}>Images</div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '8px' }}>
-                {FORMATS.filter(f => f.group === 'img').map(f => (
-                  <button key={f.key} onClick={() => setTargetFormat(f.key)} style={{
-                    padding: '10px 12px', borderRadius: 'var(--radius-md)', border: 'none', cursor: 'pointer',
-                    textAlign: 'left', transition: 'var(--transition-fast)',
-                    background: targetFormat === f.key ? `${f.color}22` : 'var(--bg-input)',
-                    outline: targetFormat === f.key ? `2px solid ${f.color}` : '1px solid var(--border-subtle)',
-                  }}>
-                    <div style={{ fontSize: '0.9rem', fontWeight: '800', color: f.color }}>{f.ext}</div>
-                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>{f.label}</div>
+            {/* Execute Button */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                className="btn btn-primary"
+                onClick={executeConversion}
+                disabled={!selectedFile || converting}
+                style={{ padding: '9px 24px', fontSize: '0.86rem', fontWeight: '600', borderRadius: '8px' }}
+              >
+                {converting ? 'Converting file...' : `Convert to .${targetFormat.toUpperCase()}`}
+              </button>
+            </div>
+          </div>
+
+          {/* Last Converted Result Quick Action Bar */}
+          {lastConvertedItem && (
+            <div className="glass-panel" style={{
+              borderRadius: '10px',
+              padding: '14px 18px',
+              border: '1px solid var(--accent-emerald)',
+              background: 'rgba(16, 185, 129, 0.08)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '12px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <CheckCircle2 size={18} color="var(--accent-emerald)" />
+                <div>
+                  <div style={{ fontWeight: '600', fontSize: '0.88rem', color: 'var(--text-primary)' }}>
+                    {lastConvertedItem.convertedName}
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    Ready &bull; {formatSize(lastConvertedItem.size)}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => handleDownload(lastConvertedItem)}
+                  style={{ padding: '5px 12px', fontSize: '0.78rem', gap: '5px' }}
+                >
+                  <Download size={13} /> Download
+                </button>
+                {!lastConvertedItem.savedToVault && (
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => handleSaveToVault(lastConvertedItem)}
+                    style={{ padding: '5px 12px', fontSize: '0.78rem', gap: '5px' }}
+                  >
+                    <HardDrive size={13} /> Save to Vault
                   </button>
-                ))}
+                )}
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setPreviewItem(lastConvertedItem)}
+                  style={{ padding: '5px 12px', fontSize: '0.78rem', gap: '5px' }}
+                >
+                  <Eye size={13} /> Preview
+                </button>
               </div>
             </div>
+          )}
 
-            {/* Progress bar */}
-            {converting && (
-              <div style={{ marginBottom: '14px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between',
-                  fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
-                  <span>Converting to {selectedFmt.ext.toUpperCase()}…</span>
-                  <span>{Math.round(progress)}%</span>
-                </div>
-                <div style={{ width: '100%', height: '5px', background: 'var(--bg-input)',
-                  borderRadius: '10px', overflow: 'hidden' }}>
-                  <div style={{
-                    width: `${progress}%`, height: '100%',
-                    background: `linear-gradient(90deg, ${selectedFmt.color}, var(--accent-cyan))`,
-                    transition: 'width 0.06s linear'
-                  }} />
-                </div>
-              </div>
-            )}
-
-            {/* Convert button */}
-            <button className="btn btn-primary" onClick={executeConversion}
-              disabled={!selectedFile || converting}
-              style={{ width: '100%', padding: '13px', fontSize: '0.95rem', fontWeight: '700' }}>
-              <RefreshCw size={16} style={{ animation: converting ? 'spin 1s linear infinite' : 'none' }} />
-              {converting
-                ? `Converting to ${selectedFmt.ext.toUpperCase()}…`
-                : `Convert → ${selectedFmt.ext.toUpperCase()}`}
-            </button>
-          </div>
         </div>
       </div>
 
-      {/* ── Converted Files Table ──────────────────────────────────────────── */}
-      <div className="glass-panel" style={{ borderRadius: 'var(--radius-lg)', padding: '22px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <FileCheck size={20} color="var(--accent-emerald)" />
-            <h3 style={{ fontSize: '1rem', fontWeight: '700' }}>Converted Files</h3>
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-              (persisted across refreshes)
-            </span>
-          </div>
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <span className="badge badge-emerald" style={{ fontSize: '0.75rem' }}>
-              {tableItems.length} file{tableItems.length !== 1 ? 's' : ''}
-            </span>
-            {sessionItems.length > 0 && (
-              <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: '0.73rem' }}
-                onClick={() => { setSessionItems([]); addToast('History cleared.', 'info'); }}>
-                Clear History
-              </button>
-            )}
-          </div>
-        </div>
+      {/* History Table */}
+      <div className="glass-panel" style={{ borderRadius: '10px', padding: '18px' }}>
+        <h3 style={{ fontSize: '0.94rem', fontWeight: '600', marginBottom: '14px', color: 'var(--text-primary)' }}>
+          Converted History ({sessionItems.length})
+        </h3>
 
-        {tableItems.length === 0 ? (
-          <div style={{ padding: '48px 20px', textAlign: 'center', color: 'var(--text-muted)' }}>
-            <RefreshCw size={40} style={{ opacity: 0.2, marginBottom: '12px' }} />
-            <p style={{ fontSize: '0.9rem' }}>No conversions yet.</p>
-            <p style={{ fontSize: '0.8rem', marginTop: '4px' }}>Select a file on the left and press Convert.</p>
+        {sessionItems.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+            No converted files yet in this session. Convert a file above to view history.
           </div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.83rem' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
               <thead>
-                <tr style={{ borderBottom: '1px solid var(--border-strong)', color: 'var(--text-muted)', textAlign: 'left' }}>
-                  <th style={{ padding: '10px 14px' }}>Original</th>
-                  <th style={{ padding: '10px 14px' }}>Converted Name</th>
-                  <th style={{ padding: '10px 14px' }}>Format</th>
-                  <th style={{ padding: '10px 14px' }}>Size</th>
-                  <th style={{ padding: '10px 14px' }}>When</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'right' }}>Actions</th>
+                <tr style={{ borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-muted)', textAlign: 'left' }}>
+                  <th style={{ padding: '8px 12px', fontWeight: 600 }}>File Name</th>
+                  <th style={{ padding: '8px 12px', fontWeight: 600 }}>Original Source</th>
+                  <th style={{ padding: '8px 12px', fontWeight: 600 }}>Format</th>
+                  <th style={{ padding: '8px 12px', fontWeight: 600 }}>Size</th>
+                  <th style={{ padding: '8px 12px', fontWeight: 600 }}>Vault Status</th>
+                  <th style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 600 }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {tableItems.map(item => {
-                  const fmt = FORMATS.find(f => f.key === item.format) || {};
-                  const hasFile = !!item.fileObj;
+                {sessionItems.map(item => {
+                  const itemStyle = getFileColorStyle(item.convertedName);
                   return (
                     <tr key={item.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                      <td style={{ padding: '12px 14px', color: 'var(--text-muted)', maxWidth: '160px',
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {item.originalName}
-                      </td>
-                      <td style={{ padding: '12px 14px', fontWeight: '700', color: 'var(--text-primary)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <ArrowRight size={12} color="var(--accent-emerald)" />
-                          <span style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <td style={{ padding: '10px 12px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{
+                            fontSize: '0.62rem',
+                            fontWeight: '700',
+                            padding: '2px 5px',
+                            borderRadius: '4px',
+                            background: itemStyle.bg,
+                            color: itemStyle.color,
+                            border: `1px solid ${itemStyle.border}`,
+                            fontFamily: 'var(--font-mono)',
+                            flexShrink: 0
+                          }}>
+                            {itemStyle.label}
+                          </span>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {item.convertedName}
                           </span>
                         </div>
                       </td>
-                      <td style={{ padding: '12px 14px' }}>
+                      <td style={{ padding: '10px 12px', color: 'var(--text-muted)' }}>
+                        {item.originalName}
+                      </td>
+                      <td style={{ padding: '10px 12px' }}>
                         <span style={{
-                          padding: '2px 9px', borderRadius: 'var(--radius-full)',
-                          fontSize: '0.72rem', fontWeight: '700', textTransform: 'uppercase',
-                          background: `${fmt.color || '#64748b'}20`,
-                          color: fmt.color || '#94a3b8',
-                          border: `1px solid ${fmt.color || '#64748b'}40`
+                          fontSize: '0.66rem',
+                          fontWeight: '700',
+                          padding: '2px 6px',
+                          borderRadius: '4px',
+                          background: itemStyle.bg,
+                          color: itemStyle.color,
+                          border: `1px solid ${itemStyle.border}`,
+                          textTransform: 'uppercase'
                         }}>
                           {item.format}
                         </span>
                       </td>
-                      <td style={{ padding: '12px 14px', color: 'var(--text-muted)' }}>
-                        {formatSize(item.size)}
-                      </td>
-                      <td style={{ padding: '12px 14px', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                        {timeAgo(item.timestamp)}
-                      </td>
-                      <td style={{ padding: '12px 14px', textAlign: 'right' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px' }}>
-                          {/* Preview */}
-                          {hasFile && (
-                            <button className="btn btn-secondary" onClick={() => handlePreview(item)}
-                              title="Preview" style={{ padding: '5px 10px', fontSize: '0.75rem' }}>
-                              <Eye size={13} />
-                            </button>
-                          )}
-
-                          {/* Save to Vault */}
-                          {item.savedToVault ? (
-                            <span style={{
-                              display: 'inline-flex', alignItems: 'center', gap: '5px',
-                              padding: '5px 12px', borderRadius: 'var(--radius-md)',
-                              background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.35)',
-                              color: '#34d399', fontSize: '0.75rem', fontWeight: '600'
-                            }}>
-                              <CheckCircle2 size={13} /> In Vault
-                            </span>
-                          ) : (
-                            <button className="btn btn-secondary" onClick={() => handleSaveToVault(item)}
-                              title={hasFile ? 'Save to Vault' : 'Re-convert to save'}
-                              style={{ padding: '5px 12px', fontSize: '0.75rem', opacity: hasFile ? 1 : 0.5 }}>
-                              <HardDrive size={13} color="var(--accent-primary)" />
-                              {hasFile ? 'Save to Vault' : 'Re-convert'}
-                            </button>
-                          )}
-
-                          {/* Download */}
-                          <button className="btn btn-primary" onClick={() => handleDownload(item)}
-                            style={{ padding: '5px 12px', fontSize: '0.75rem', opacity: hasFile ? 1 : 0.5 }}>
-                            <Download size={13} />
-                            {hasFile ? 'Download' : 'Re-convert'}
+                    <td style={{ padding: '10px 12px', color: 'var(--text-muted)' }}>
+                      {formatSize(item.size)}
+                    </td>
+                    <td style={{ padding: '10px 12px' }}>
+                      {item.savedToVault ? (
+                        <span style={{ color: 'var(--accent-emerald)', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <Check size={12} /> In Vault
+                        </span>
+                      ) : (
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>Local Only</span>
+                      )}
+                    </td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px' }}>
+                        <button
+                          className="btn btn-ghost btn-icon"
+                          title="Preview"
+                          onClick={() => setPreviewItem(item)}
+                          style={{ padding: '4px', height: '28px', width: '28px' }}
+                        >
+                          <Eye size={14} />
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-icon"
+                          title="Download"
+                          onClick={() => handleDownload(item)}
+                          style={{ padding: '4px', height: '28px', width: '28px' }}
+                        >
+                          <Download size={14} />
+                        </button>
+                        {!item.savedToVault && (
+                          <button
+                            className="btn btn-ghost btn-icon"
+                            title="Save to Vault"
+                            onClick={() => handleSaveToVault(item)}
+                            style={{ padding: '4px', height: '28px', width: '28px' }}
+                          >
+                            <HardDrive size={14} />
                           </button>
-
-                          {/* Delete */}
-                          <button className="btn btn-secondary" onClick={() => handleDelete(item)}
-                            title="Remove from history"
-                            style={{ padding: '5px 8px', fontSize: '0.75rem',
-                              background: 'rgba(239,68,68,0.1)', borderColor: 'rgba(239,68,68,0.3)', color: '#f87171' }}>
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                        )}
+                        <button
+                          className="btn btn-ghost btn-icon"
+                          title="Delete from history"
+                          onClick={() => handleDelete(item)}
+                          style={{ padding: '4px', height: '28px', width: '28px', color: 'var(--accent-rose)' }}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
               </tbody>
             </table>
           </div>
         )}
       </div>
 
-      {/* ── Preview Modal ──────────────────────────────────────────────────── */}
+      {/* Preview Modal */}
       {previewItem && (
-        <div style={{
-          position: 'fixed', inset: 0, zIndex: 9999,
-          background: 'rgba(0,0,0,0.75)', display: 'flex',
-          alignItems: 'center', justifyContent: 'center', padding: '20px'
-        }} onClick={() => setPreviewItem(null)}>
-          <div className="glass-panel" onClick={e => e.stopPropagation()} style={{
-            borderRadius: 'var(--radius-xl)', padding: '24px',
-            maxWidth: '800px', width: '100%', maxHeight: '80vh',
-            display: 'flex', flexDirection: 'column', gap: '14px'
-          }}>
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 9999,
+            background: 'rgba(0,0,0,0.75)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '20px'
+          }}
+          onClick={() => setPreviewItem(null)}
+        >
+          <div
+            className="glass-panel"
+            onClick={e => e.stopPropagation()}
+            style={{
+              borderRadius: '10px',
+              padding: '20px',
+              maxWidth: '800px',
+              width: '100%',
+              maxHeight: '80vh',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px'
+            }}
+          >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <h3 style={{ fontSize: '1rem', fontWeight: '700' }}>{previewItem.convertedName}</h3>
-              <button className="btn btn-secondary" onClick={() => setPreviewItem(null)}
-                style={{ padding: '4px 8px' }}><X size={16} /></button>
+              <h3 style={{ fontSize: '0.96rem', fontWeight: '700', margin: 0 }}>
+                {previewItem.convertedName}
+              </h3>
+              <button
+                className="btn btn-ghost btn-icon"
+                onClick={() => setPreviewItem(null)}
+                style={{ padding: '4px' }}
+              >
+                <X size={16} />
+              </button>
             </div>
-            <div style={{ flex: 1, overflowY: 'auto', borderRadius: 'var(--radius-md)',
-              background: 'var(--bg-input)', padding: '16px' }}>
+
+            <div style={{
+              flex: 1,
+              overflowY: 'auto',
+              borderRadius: '6px',
+              background: 'var(--bg-input)',
+              padding: '12px',
+              minHeight: '200px'
+            }}>
               <PreviewContent item={previewItem} />
             </div>
+
             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-              <button className="btn btn-primary" style={{ padding: '7px 16px', fontSize: '0.82rem' }}
-                onClick={() => { handleDownload(previewItem); setPreviewItem(null); }}>
-                <Download size={14} /> Download
+              <button
+                className="btn btn-primary"
+                onClick={() => { handleDownload(previewItem); setPreviewItem(null); }}
+                style={{ padding: '6px 14px', fontSize: '0.8rem' }}
+              >
+                <Download size={13} /> Download
               </button>
-              {!previewItem.savedToVault && (
-                <button className="btn btn-secondary" style={{ padding: '7px 16px', fontSize: '0.82rem' }}
-                  onClick={() => { handleSaveToVault(previewItem); setPreviewItem(null); }}>
-                  <HardDrive size={14} /> Save to Vault
-                </button>
-              )}
             </div>
           </div>
         </div>
@@ -888,25 +1399,65 @@ export function ConverterStudioPage() {
   );
 }
 
-// ── Lazy preview renderer ──────────────────────────────────────────────────────
 function PreviewContent({ item }) {
-  const [content, setContent] = React.useState(null);
-  React.useEffect(() => {
+  const [content, setContent] = useState(null);
+
+  useEffect(() => {
     if (!item?.fileObj) return;
     let createdUrl = null;
     const fmt = item.format.toLowerCase();
-    if (['png','jpeg','jpg','webp'].includes(fmt)) {
+
+    if (['png', 'jpeg', 'jpg', 'webp'].includes(fmt)) {
       createdUrl = URL.createObjectURL(item.fileObj);
       setContent({ type: 'image', url: createdUrl });
+    } else if (fmt === 'pdf') {
+      createdUrl = URL.createObjectURL(item.fileObj);
+      setContent({ type: 'pdf', url: createdUrl });
     } else {
-      item.fileObj.text().then(t => setContent({ type: 'text', text: t }));
+      item.fileObj.text().then(t => setContent({ type: 'text', text: t })).catch(() => {
+        setContent({ type: 'text', text: '[Binary file format — click download to view]' });
+      });
     }
-    return () => { if (createdUrl) URL.revokeObjectURL(createdUrl); };
+
+    return () => {
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
   }, [item]);
 
-  if (!content) return <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '20px' }}>Loading…</div>;
-  if (content.type === 'image') return <img src={content.url} alt={item.convertedName}
-    style={{ maxWidth: '100%', borderRadius: 'var(--radius-md)' }} />;
-  return <pre style={{ fontSize: '0.78rem', color: 'var(--text-primary)', whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word', margin: 0, fontFamily: 'monospace' }}>{content.text}</pre>;
+  if (!content) {
+    return <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '20px' }}>Loading file...</div>;
+  }
+
+  if (content.type === 'image') {
+    return (
+      <img
+        src={content.url}
+        alt={item.convertedName}
+        style={{ maxWidth: '100%', maxHeight: '400px', margin: '0 auto', display: 'block', borderRadius: '4px' }}
+      />
+    );
+  }
+
+  if (content.type === 'pdf') {
+    return (
+      <iframe
+        src={content.url}
+        title={item.convertedName}
+        style={{ width: '100%', height: '400px', border: 'none', borderRadius: '4px' }}
+      />
+    );
+  }
+
+  return (
+    <pre style={{
+      fontSize: '0.78rem',
+      color: 'var(--text-primary)',
+      whiteSpace: 'pre-wrap',
+      wordBreak: 'break-word',
+      margin: 0,
+      fontFamily: 'monospace'
+    }}>
+      {content.text}
+    </pre>
+  );
 }

@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { useStorage } from '../context/StorageContext';
 import { X, UploadCloud, FolderUp, File, CheckCircle2 } from 'lucide-react';
+import { getFileColorStyle } from '../utils/fileTypeStyles';
 
 export function UploadModal() {
   const { isUploadOpen, setIsUploadOpen, uploadFiles, uploadProgress } = useStorage();
@@ -25,15 +26,18 @@ export function UploadModal() {
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      setSelectedFiles(Array.from(e.dataTransfer.files));
+      const incoming = Array.from(e.dataTransfer.files);
+      setSelectedFiles(prev => [...prev, ...incoming]);
       setIsDone(false);
     }
   };
 
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files.length > 0) {
-      setSelectedFiles(Array.from(e.target.files));
+      const incoming = Array.from(e.target.files);
+      setSelectedFiles(prev => [...prev, ...incoming]);
       setIsDone(false);
+      e.target.value = ''; // reset so same files can be re-selected if desired
     }
   };
 
@@ -68,8 +72,8 @@ export function UploadModal() {
       <div className="modal-content" style={{ maxWidth: '620px' }}>
         <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <UploadCloud size={22} color="var(--accent-primary)" />
-            <h3 style={{ fontSize: '1.1rem' }}>Upload Files & Recursive Folders</h3>
+            <UploadCloud size={18} color="var(--accent-primary)" />
+            <h3 style={{ fontSize: '0.98rem', fontWeight: 600 }}>Upload to Vault</h3>
           </div>
           <button className="btn btn-ghost btn-icon" onClick={() => setIsUploadOpen(false)}>
             <X size={18} />
@@ -77,6 +81,25 @@ export function UploadModal() {
         </div>
 
         <div className="modal-body">
+          {/* Cloud Storage Destination Status */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: '8px',
+            padding: '8px 12px',
+            marginBottom: '14px',
+            fontSize: '0.74rem'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--accent-primary)', fontWeight: 600 }}>
+              <UploadCloud size={13} />
+              <span>Encrypted Cloud Vault Active &bull; Unlimited Storage</span>
+            </div>
+            <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>High-Speed CDN</span>
+          </div>
+
           {/* Dropzone */}
           <div
             onDragOver={handleDragOver}
@@ -109,32 +132,33 @@ export function UploadModal() {
             />
 
             <div style={{
-              width: '60px',
-              height: '60px',
-              borderRadius: '50%',
-              background: 'rgba(99, 102, 241, 0.15)',
+              width: '44px',
+              height: '44px',
+              borderRadius: '9px',
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--border-subtle)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              margin: '0 auto 14px auto',
+              margin: '0 auto 12px auto',
               color: 'var(--accent-primary)'
             }}>
-              <UploadCloud size={30} />
+              <UploadCloud size={22} />
             </div>
 
-            <h4 style={{ fontSize: '1.05rem', fontWeight: '700', marginBottom: '6px' }}>
-              Drag & Drop files or full folders here
+            <h4 style={{ fontSize: '0.96rem', fontWeight: '600', marginBottom: '4px', color: 'var(--text-primary)' }}>
+              Drag and drop files or folders here
             </h4>
-            <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '18px' }}>
-              Unlimited local disk quota. Upload high-res raw images, 4K videos, zip files, or full folders.
+            <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '16px' }}>
+              Files are encrypted locally and saved directly to your private vault.
             </p>
 
-            <div style={{ display: 'flex', justifyContent: 'center', gap: '12px' }}>
-              <button className="btn btn-primary" onClick={() => fileInputRef.current?.click()}>
-                <File size={16} /> Choose Files
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '10px' }}>
+              <button className="btn btn-primary" onClick={() => fileInputRef.current?.click()} style={{ fontSize: '0.82rem', padding: '7px 14px', borderRadius: '7px' }}>
+                <File size={14} /> Choose Files
               </button>
-              <button className="btn btn-secondary" onClick={() => folderInputRef.current?.click()}>
-                <FolderUp size={16} color="var(--accent-cyan)" /> Upload Whole Folder
+              <button className="btn btn-secondary" onClick={() => folderInputRef.current?.click()} style={{ fontSize: '0.82rem', padding: '7px 14px', borderRadius: '7px' }}>
+                <FolderUp size={14} /> Upload Folder
               </button>
             </div>
           </div>
@@ -142,28 +166,73 @@ export function UploadModal() {
           {/* Selected Files List Preview */}
           {selectedFiles.length > 0 && (
             <div style={{ marginTop: '20px' }}>
-              <div style={{ fontSize: '0.85rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '10px' }}>
-                QUEUED ITEMS ({selectedFiles.length})
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '140px', overflowY: 'auto' }}>
-                {selectedFiles.map((file, idx) => (
-                  <div key={idx} style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '8px 12px',
-                    background: 'var(--bg-surface)',
-                    borderRadius: 'var(--radius-md)',
-                    border: '1px solid var(--border-subtle)',
-                    fontSize: '0.85rem'
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '0.84rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                    QUEUED ITEMS ({selectedFiles.length})
+                  </span>
+                  <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                    &bull; {formatSize(selectedFiles.reduce((sum, f) => sum + (f.size || 0), 0))}
+                  </span>
+                  <span style={{
+                    fontSize: '0.64rem',
+                    color: 'var(--accent-emerald)',
+                    background: 'rgba(16, 185, 129, 0.1)',
+                    padding: '2px 6px',
+                    borderRadius: '4px',
+                    fontWeight: 600
                   }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <File size={16} color="var(--accent-primary)" />
-                      <span style={{ fontWeight: '500', color: 'var(--text-primary)' }}>{file.webkitRelativePath || file.name}</span>
+                    No batch limit
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => setSelectedFiles([])}
+                  style={{ fontSize: '0.74rem', padding: '2px 8px', color: 'var(--accent-rose)' }}
+                  disabled={isUploading}
+                >
+                  Clear Queue
+                </button>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '230px', overflowY: 'auto', paddingRight: '4px' }}>
+                {selectedFiles.map((file, idx) => {
+                  const fStyle = getFileColorStyle(file);
+                  return (
+                    <div key={idx} style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '8px 12px',
+                      background: 'var(--bg-surface)',
+                      borderRadius: 'var(--radius-md)',
+                      border: '1px solid var(--border-subtle)',
+                      fontSize: '0.85rem'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                        <span style={{
+                          fontSize: '0.62rem',
+                          fontWeight: '700',
+                          padding: '2px 5px',
+                          borderRadius: '4px',
+                          background: fStyle.bg,
+                          color: fStyle.color,
+                          border: `1px solid ${fStyle.border}`,
+                          fontFamily: 'var(--font-mono)',
+                          flexShrink: 0
+                        }}>
+                          {fStyle.label}
+                        </span>
+                        <span style={{ fontWeight: '500', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {file.webkitRelativePath || file.name}
+                        </span>
+                      </div>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', flexShrink: 0, marginLeft: '8px' }}>
+                        {formatSize(file.size)}
+                      </span>
                     </div>
-                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>{formatSize(file.size)}</span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -184,11 +253,12 @@ export function UploadModal() {
                 </span>
                 <span style={{ color: 'var(--accent-primary)', fontFamily: 'var(--font-mono)' }}>{uploadProgress.percentage}%</span>
               </div>
-              <div style={{ width: '100%', height: '8px', background: 'var(--bg-input)', borderRadius: '4px', overflow: 'hidden' }}>
+              <div style={{ width: '100%', height: '6px', background: 'var(--bg-input)', borderRadius: '999px', overflow: 'hidden' }}>
                 <div style={{
                   width: `${uploadProgress.percentage}%`,
                   height: '100%',
-                  background: 'linear-gradient(90deg, #6366f1, #06b6d4)',
+                  background: 'var(--accent-primary)',
+                  borderRadius: '999px',
                   transition: 'width 0.2s ease-out'
                 }} />
               </div>
@@ -198,8 +268,8 @@ export function UploadModal() {
 
         <div className="modal-footer">
           {isDone ? (
-            <button className="btn btn-primary" onClick={handleFinish} style={{ width: '100%', background: '#10b981', borderColor: '#10b981' }}>
-              <CheckCircle2 size={18} /> Stored {selectedFiles.length} File(s) in Vault — Close
+            <button className="btn btn-primary" onClick={handleFinish} style={{ width: '100%' }}>
+              <CheckCircle2 size={16} /> Stored {selectedFiles.length} File(s) in Vault — Close
             </button>
           ) : (
             <>

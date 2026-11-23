@@ -1,28 +1,46 @@
 import React, { useState } from 'react';
 import { useStorage } from '../context/StorageContext';
-import { X, Share2, Copy, Check, Lock, Globe, Shield } from 'lucide-react';
+import { formatBytes } from '../utils/planQuotas';
+import { X, Share2, Copy, Check, Lock, Globe, ExternalLink } from 'lucide-react';
+
+function encodeShareToken(file) {
+  try {
+    const payload = {
+      id: file.id,
+      n: file.name,
+      s: file.size || 0,
+      t: file.type || 'application/octet-stream',
+      c: file.category || 'document',
+      tg: file.telegramFileId || null
+    };
+    return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+  } catch {
+    return '';
+  }
+}
 
 export function ShareModal() {
   const { activeShare, setActiveShare, addToast } = useStorage();
   const [copied, setCopied] = useState(false);
-  const [linkAccess, setLinkAccess] = useState('passcode'); // 'public', 'passcode'
+  const [linkAccess, setLinkAccess] = useState('passcode'); // 'public' | 'passcode'
   const [sharePasscode, setSharePasscode] = useState(() => Math.floor(100000 + Math.random() * 900000).toString());
 
   if (!activeShare) return null;
 
   const realPasscode = linkAccess === 'passcode' ? sharePasscode : '';
-  const shareUrl = `${window.location.origin}?share=${activeShare.id}${realPasscode ? `&pass=${realPasscode}` : ''}`;
+  const token = encodeShareToken(activeShare);
+  const shareUrl = `${window.location.origin}?share=${encodeURIComponent(activeShare.id)}${token ? `&token=${encodeURIComponent(token)}` : ''}${realPasscode ? `&pass=${encodeURIComponent(realPasscode)}` : ''}`;
 
   const generateNewPasscode = () => {
     const newPin = Math.floor(100000 + Math.random() * 900000).toString();
     setSharePasscode(newPin);
-    addToast('Generated new 6-digit access passcode!', 'info');
+    addToast('Generated new 6-digit access passcode', 'info');
   };
 
   const handleCopy = () => {
     navigator.clipboard.writeText(shareUrl);
     setCopied(true);
-    addToast(`Copied real share link ${realPasscode ? `(Passcode: ${realPasscode})` : ''}`, 'success');
+    addToast(`Copied share link ${realPasscode ? `(PIN: ${realPasscode})` : ''}`, 'success');
     setTimeout(() => setCopied(false), 3000);
   };
 
@@ -31,55 +49,68 @@ export function ShareModal() {
       <div
         className="modal-content"
         onClick={(e) => e.stopPropagation()}
-        style={{ maxWidth: '520px' }}
+        style={{ maxWidth: '500px', width: '94vw' }}
       >
         <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <Share2 size={22} color="var(--accent-amber)" />
-            <h3 style={{ fontSize: '1.1rem' }}>Share Encrypted File Link</h3>
-          </div>
-          <button className="btn btn-ghost btn-icon" onClick={() => setActiveShare(null)}>
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="modal-body">
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-            padding: '12px 14px',
-            background: 'var(--bg-surface)',
-            borderRadius: 'var(--radius-md)',
-            border: '1px solid var(--border-subtle)',
-            marginBottom: '20px'
-          }}>
             <div style={{
-              width: '36px',
-              height: '36px',
-              borderRadius: '8px',
-              background: 'rgba(245, 158, 11, 0.2)',
+              width: '30px',
+              height: '30px',
+              borderRadius: '7px',
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border-subtle)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              color: 'var(--accent-amber)'
+              color: 'var(--accent-primary)'
             }}>
-              <Share2 size={18} />
+              <Share2 size={15} />
             </div>
+            <h3 style={{ fontSize: '0.96rem', fontWeight: 600 }}>Share Cloud File Link</h3>
+          </div>
+          <button className="btn btn-ghost btn-icon" onClick={() => setActiveShare(null)}>
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+            padding: '12px 14px',
+            background: 'var(--bg-surface)',
+            borderRadius: '8px',
+            border: '1px solid var(--border-subtle)'
+          }}>
             <div style={{ overflow: 'hidden' }}>
-              <div style={{ fontWeight: '600', fontSize: '0.9rem', color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+              <div style={{ fontWeight: 600, fontSize: '0.88rem', color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
                 {activeShare.name}
               </div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                {activeShare.category} • {(activeShare.size / 1024).toFixed(1)} KB
+              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                {activeShare.category?.toUpperCase()} &bull; {formatBytes(activeShare.size || 0)}
               </div>
             </div>
+            <a
+              href={shareUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="btn btn-ghost"
+              style={{ fontSize: '0.74rem', padding: '5px 9px', borderRadius: '6px', gap: '4px', flexShrink: 0 }}
+              title="Preview shared page in new tab"
+            >
+              <span>Test Link</span>
+              <ExternalLink size={12} />
+            </a>
           </div>
 
           {/* Access Policy Selection */}
-          <div style={{ marginBottom: '20px' }}>
-            <label className="form-label">LINK SECURITY ACCESS CONTROL</label>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginTop: '8px' }}>
+          <div>
+            <label style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '8px' }}>
+              ACCESS PERMISSION
+            </label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
               <button
                 type="button"
                 className="btn btn-secondary"
@@ -87,14 +118,15 @@ export function ShareModal() {
                 style={{
                   justifyContent: 'flex-start',
                   padding: '10px 12px',
-                  background: linkAccess === 'public' ? 'rgba(99, 102, 241, 0.18)' : 'var(--bg-input)',
-                  borderColor: linkAccess === 'public' ? 'var(--accent-primary)' : 'var(--border-subtle)'
+                  borderRadius: '8px',
+                  background: linkAccess === 'public' ? 'var(--bg-surface-hover)' : 'var(--bg-input)',
+                  border: linkAccess === 'public' ? '1.5px solid var(--accent-primary)' : '1px solid var(--border-subtle)'
                 }}
               >
-                <Globe size={16} color="var(--accent-primary)" />
+                <Globe size={15} color="var(--accent-primary)" />
                 <div style={{ textAlign: 'left' }}>
-                  <div style={{ fontSize: '0.82rem', fontWeight: '600' }}>Public Link</div>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Anyone with link can view</div>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>Direct Link</div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Anyone with link can view</div>
                 </div>
               </button>
 
@@ -105,63 +137,73 @@ export function ShareModal() {
                 style={{
                   justifyContent: 'flex-start',
                   padding: '10px 12px',
-                  background: linkAccess === 'passcode' ? 'rgba(99, 102, 241, 0.18)' : 'var(--bg-input)',
-                  borderColor: linkAccess === 'passcode' ? 'var(--accent-primary)' : 'var(--border-subtle)'
+                  borderRadius: '8px',
+                  background: linkAccess === 'passcode' ? 'var(--bg-surface-hover)' : 'var(--bg-input)',
+                  border: linkAccess === 'passcode' ? '1.5px solid var(--accent-primary)' : '1px solid var(--border-subtle)'
                 }}
               >
-                <Lock size={16} color="var(--accent-cyan)" />
+                <Lock size={15} color="var(--accent-emerald)" />
                 <div style={{ textAlign: 'left' }}>
-                  <div style={{ fontSize: '0.82rem', fontWeight: '600' }}>PIN Protected</div>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Requires Passcode</div>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>PIN Protected</div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Requires 6-digit PIN</div>
                 </div>
               </button>
             </div>
           </div>
 
           {linkAccess === 'passcode' && (
-            <div className="form-group" style={{ marginBottom: '20px' }}>
-              <label className="form-label">SET ACCESS PASSCODE</label>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <label style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  ACCESS PASSCODE (PIN)
+                </label>
+                <button
+                  type="button"
+                  onClick={generateNewPasscode}
+                  style={{ background: 'none', border: 'none', color: 'var(--accent-primary)', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', padding: 0 }}
+                >
+                  Generate New PIN
+                </button>
+              </div>
               <input
                 type="text"
                 className="input-text"
-                placeholder="e.g. SecretPass123"
+                placeholder="e.g. 6-digit passcode"
                 value={sharePasscode}
                 onChange={(e) => setSharePasscode(e.target.value)}
+                style={{ fontSize: '0.88rem', fontFamily: 'monospace', letterSpacing: '0.1em' }}
               />
             </div>
           )}
 
           {/* Copy Link Input Bar */}
-          <div className="form-group">
-            <label className="form-label">GENERATED ENCRYPTED SHARE URL</label>
-            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+          <div>
+            <label style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '6px' }}>
+              SHAREABLE CLOUD URL
+            </label>
+            <div style={{ display: 'flex', gap: '8px' }}>
               <input
                 type="text"
                 className="input-text"
                 value={shareUrl}
                 readOnly
-                style={{ paddingRight: '110px', fontSize: '0.82rem', fontFamily: 'var(--font-mono)' }}
+                style={{ fontSize: '0.78rem', fontFamily: 'monospace', flex: 1 }}
               />
               <button
                 className="btn btn-primary"
                 onClick={handleCopy}
-                style={{
-                  position: 'absolute',
-                  right: '4px',
-                  padding: '6px 14px',
-                  fontSize: '0.8rem'
-                }}
+                style={{ padding: '0 16px', fontSize: '0.8rem', borderRadius: '7px', flexShrink: 0 }}
               >
                 {copied ? <Check size={14} /> : <Copy size={14} />}
-                <span>{copied ? 'Copied!' : 'Copy'}</span>
+                <span>{copied ? 'Copied' : 'Copy'}</span>
               </button>
             </div>
           </div>
         </div>
 
         <div className="modal-footer">
-          <button className="btn btn-primary" onClick={() => setActiveShare(null)}>
-            Done
+          <button className="btn btn-secondary" onClick={() => setActiveShare(null)}>
+            Close
           </button>
         </div>
       </div>

@@ -1,26 +1,29 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useStorage } from '../context/StorageContext';
+import { getPlanQuota } from '../utils/planQuotas';
 import {
   User,
   X,
   LogOut,
   CheckCircle2,
-  Sparkles,
   Shield
 } from 'lucide-react';
 
 export function AuthModal() {
-  const { isAuthModalOpen, setIsAuthModalOpen, addToast } = useStorage();
+  const { isAuthModalOpen, setIsAuthModalOpen, setIsSubscriptionOpen, addToast } = useStorage();
   const { user, signOut } = useAuth();
 
-  // Close if user is not logged in (AuthLandingPage handles the full-screen login)
   if (!isAuthModalOpen) return null;
 
   const handleSignOut = async () => {
     await signOut();
     setIsAuthModalOpen(false);
-    addToast('Signed out of your vault.', 'info');
+    if (addToast) addToast('Signed out of vault.', 'info');
+  };
+
+  const cleanPlanTitle = (plan) => {
+    return getPlanQuota(plan).displayName;
   };
 
   return (
@@ -28,42 +31,52 @@ export function AuthModal() {
       <div
         className="modal-content"
         onClick={(e) => e.stopPropagation()}
-        style={{ maxWidth: '420px', width: '92vw' }}
+        style={{ maxWidth: '400px', width: '92vw', padding: 0 }}
       >
-        <div className="modal-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <User size={22} color="var(--accent-primary)" />
-            <h3 style={{ fontSize: '1.1rem' }}>Vault Account</h3>
+        <div className="modal-header" style={{ padding: '14px 18px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <User size={17} color="var(--accent-primary)" />
+            <h3 style={{ fontSize: '0.96rem', fontWeight: '600' }}>Vault Account</h3>
           </div>
-          <button className="btn btn-ghost btn-icon" onClick={() => setIsAuthModalOpen(false)}>
-            <X size={18} />
+          <button className="btn btn-ghost btn-icon" onClick={() => setIsAuthModalOpen(false)} style={{ padding: '4px' }}>
+            <X size={16} />
           </button>
         </div>
 
-        <div className="modal-body" style={{ padding: '24px' }}>
+        <div className="modal-body" style={{ padding: '18px' }}>
           {user ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               {/* User Info */}
               <div style={{
-                display: 'flex', alignItems: 'center', gap: '14px',
-                padding: '16px', borderRadius: 'var(--radius-md)',
-                background: 'rgba(99, 102, 241, 0.12)',
-                border: '1px solid rgba(99, 102, 241, 0.3)'
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                padding: '12px',
+                borderRadius: '8px',
+                background: 'var(--bg-input)',
+                border: '1px solid var(--border-subtle)'
               }}>
                 <img
                   src={user.avatar}
                   alt={user.username}
-                  style={{ width: '48px', height: '48px', borderRadius: '50%', objectFit: 'cover' }}
+                  style={{ width: '42px', height: '42px', borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--border-strong)' }}
                 />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: '700', fontSize: '1rem', color: 'var(--text-primary)' }}>
-                    {user.username}
+                  <div style={{ fontWeight: '600', fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                    {user.username && !user.username.startsWith('local_') ? user.username : 'Vault Master'}
                   </div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
-                    {user.email}
+                  <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {user.email || 'user@storagebank.vault'}
                   </div>
                   <div style={{ marginTop: '4px' }}>
-                    <span className="badge badge-emerald" style={{ fontSize: '0.7rem' }}>
+                    <span style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      fontSize: '0.68rem',
+                      color: 'var(--accent-emerald)',
+                      fontWeight: '500'
+                    }}>
                       <CheckCircle2 size={10} /> Active Session
                     </span>
                   </div>
@@ -72,38 +85,58 @@ export function AuthModal() {
 
               {/* Plan Info */}
               <div style={{
-                padding: '12px 16px', borderRadius: 'var(--radius-md)',
-                background: 'var(--bg-input)', border: '1px solid var(--border-subtle)',
-                display: 'flex', alignItems: 'center', gap: '10px'
+                padding: '10px 14px',
+                borderRadius: '8px',
+                background: 'var(--bg-surface)',
+                border: '1px solid var(--border-subtle)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between'
               }}>
-                <Shield size={16} color="var(--accent-cyan)" />
-                <div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: '700', textTransform: 'uppercase' }}>Current Plan</div>
-                  <div style={{ fontSize: '0.88rem', color: 'var(--text-primary)', fontWeight: '600' }}>{user.plan}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Shield size={15} color="var(--accent-primary)" />
+                  <div>
+                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase' }}>PLAN TIER</div>
+                    <div style={{ fontSize: '0.82rem', color: 'var(--text-primary)', fontWeight: '600' }}>{cleanPlanTitle(user.plan)}</div>
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setIsAuthModalOpen(false);
+                    if (setIsSubscriptionOpen) setIsSubscriptionOpen(true);
+                  }}
+                  style={{ fontSize: '0.74rem', padding: '4px 10px', borderRadius: '6px' }}
+                >
+                  Manage
+                </button>
               </div>
 
               {/* Sign Out */}
               <button
-                className="btn"
+                className="btn btn-secondary"
                 onClick={handleSignOut}
                 style={{
-                  width: '100%', padding: '12px',
-                  background: 'rgba(239, 68, 68, 0.12)',
+                  width: '100%',
+                  padding: '9px',
+                  borderRadius: '7px',
                   border: '1px solid rgba(239, 68, 68, 0.3)',
-                  color: '#fca5a5', borderRadius: 'var(--radius-md)',
-                  fontWeight: '700', cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-                  transition: 'var(--transition-fast)'
+                  background: 'rgba(239, 68, 68, 0.08)',
+                  color: '#fca5a5',
+                  fontSize: '0.82rem',
+                  fontWeight: '600',
+                  justifyContent: 'center',
+                  gap: '6px'
                 }}
               >
-                <LogOut size={16} /> Sign Out of Vault
+                <LogOut size={14} />
+                <span>Sign Out of Vault</span>
               </button>
             </div>
           ) : (
-            <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '20px 0' }}>
-              <Sparkles size={32} color="var(--accent-primary)" style={{ margin: '0 auto 12px' }} />
-              <p>You are not signed in. Please use the login screen.</p>
+            <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: '0.84rem' }}>
+              No active vault session found.
             </div>
           )}
         </div>

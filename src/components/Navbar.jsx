@@ -1,438 +1,265 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useStorage } from '../context/StorageContext';
 import { useAuth } from '../context/AuthContext';
+import { getPlanQuota } from '../utils/planQuotas';
 import {
   Search,
   LayoutGrid,
   List,
-  PieChart,
-  Activity,
   Command,
   User,
   LogOut,
   ShieldCheck,
-  Palette,
   Bot,
-  Music,
-  Disc,
-  Sparkles
+  Activity,
+  Sun,
+  Moon,
+  Menu,
+  HardDrive,
+  Lock
 } from 'lucide-react';
 
-export function Navbar({ onOpenAiCopilot }) {
+export function Navbar({ onOpenAiCopilot, onToggleMobileSidebar, onOpenSubscription }) {
   const {
     searchQuery,
     setSearchQuery,
     viewMode,
     setViewMode,
-    setIsAnalyticsOpen,
-    setIsAuthModalOpen,
     setIsCommandPaletteOpen,
     setIsActivityLogOpen,
-    setIsSubscriptionOpen,
-    setIsMusicStudioOpen,
     setActiveCategory,
-    isMusicPlaying,
-    toggleMusicPlay,
-    currentMusicTrack
+    addToast
   } = useStorage();
 
   const { user, theme, changeTheme, signOut } = useAuth();
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
-  const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
-
   const profileRef = useRef(null);
-  const themeRef = useRef(null);
 
-  // Click outside to dismiss menus
   useEffect(() => {
     const handleGlobalClick = (e) => {
       if (profileRef.current && !profileRef.current.contains(e.target)) {
         setIsProfileMenuOpen(false);
-      }
-      if (themeRef.current && !themeRef.current.contains(e.target)) {
-        setIsThemeMenuOpen(false);
       }
     };
     window.addEventListener('click', handleGlobalClick);
     return () => window.removeEventListener('click', handleGlobalClick);
   }, []);
 
-  const themeOptions = [
-    { key: 'dark', name: 'Obsidian Cyber (Dark)', color: '#6366f1' },
-    { key: 'light', name: 'Clean Pearl (Light)', color: '#0f172a' },
-    { key: 'cyberpunk', name: 'Neon Cyberpunk', color: '#ec4899' },
-    { key: 'emerald', name: 'Emerald Forest', color: '#10b981' },
-    { key: 'sunset', name: 'Sunset Horizon', color: '#f59e0b' },
-    { key: 'oled', name: 'Midnight OLED', color: '#ffffff' },
-    { key: 'cosmos', name: 'Deep Cosmos', color: '#3b82f6' },
-    { key: 'matrix', name: 'Toxic Acid Matrix', color: '#22c55e' },
-    { key: 'mocha', name: 'Warm Mocha Velvet', color: '#d97706' },
-    { key: 'nordic', name: 'Nordic Ice Frost', color: '#38bdf8' },
-    { key: 'sakura', name: 'Sakura Bloom', color: '#f472b6' },
-    { key: 'synthwave', name: 'Hyper Synthwave', color: '#d946ef' },
-  ];
+  const toggleTheme = () => {
+    changeTheme(theme === 'dark' ? 'light' : 'dark');
+  };
+
+  const formatPlanDisplay = (plan) => {
+    return getPlanQuota(plan).displayName;
+  };
+
+  const getCleanUsername = () => {
+    if (!user?.username) return user?.email?.split('@')[0] || 'Vault Owner';
+    return user.username;
+  };
+
+  const getCleanEmail = () => {
+    return user?.email || 'user@storagebank.vault';
+  };
 
   return (
-    <header style={{
-      height: '70px',
-      padding: '0 24px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      gap: '16px',
-      borderBottom: '1px solid var(--border-subtle)',
-      background: 'var(--bg-surface)',
-      backdropFilter: 'blur(20px)',
-      zIndex: 90,
-      flexShrink: 0
-    }}>
-      {/* Search Input Bar */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flex: 1, maxWidth: '580px' }}>
+    <header
+      className="navbar-header"
+      style={{
+        height: '56px',
+        padding: '0 20px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '12px',
+        borderBottom: '1px solid var(--border-subtle)',
+        background: 'var(--bg-secondary)',
+        zIndex: 90,
+        flexShrink: 0
+      }}
+    >
+      {/* Left section: Mobile Hamburger (Mobile Only) + Search Input */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, maxWidth: '520px', minWidth: 0 }}>
+        {onToggleMobileSidebar && (
+          <button
+            className="btn btn-ghost btn-icon mobile-menu-btn"
+            onClick={onToggleMobileSidebar}
+            style={{
+              height: '34px',
+              width: '34px',
+              padding: 0,
+              borderRadius: '7px',
+              border: '1px solid var(--border-subtle)',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0
+            }}
+            title="Open Navigation"
+          >
+            <Menu size={16} color="var(--text-secondary)" />
+          </button>
+        )}
+
         <div
-          onClick={() => setIsCommandPaletteOpen(true)}
           style={{
             position: 'relative',
             width: '100%',
             display: 'flex',
             alignItems: 'center',
-            cursor: 'pointer'
+            minWidth: 0
           }}
         >
-          <Search size={18} style={{ position: 'absolute', left: '14px', color: 'var(--text-muted)' }} />
+          <Search size={14} style={{ position: 'absolute', left: '11px', color: 'var(--text-muted)', pointerEvents: 'none' }} />
           <input
             type="text"
-            className="input-text"
-            placeholder="Search files or press Ctrl+K for commands..."
+            className="input-text navbar-search-input"
+            placeholder="Search files & folders..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             style={{
-              paddingLeft: '42px',
-              paddingRight: '74px',
-              borderRadius: '9999px',
+              paddingLeft: '33px',
+              paddingRight: '58px',
+              height: '34px',
+              borderRadius: '8px',
               background: 'var(--bg-input)',
-              fontSize: '0.88rem',
-              cursor: 'pointer'
+              fontSize: '0.83rem'
             }}
           />
-          <div style={{
-            position: 'absolute',
-            right: '10px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '2px',
-            background: 'var(--bg-surface)',
-            border: '1px solid var(--border-subtle)',
-            padding: '2px 8px',
-            borderRadius: '6px',
-            fontSize: '0.72rem',
-            color: 'var(--text-muted)',
-            fontWeight: '600'
-          }}>
+          <div
+            className="desktop-only"
+            onClick={() => setIsCommandPaletteOpen(true)}
+            title="Open Command Palette (Ctrl+K)"
+            style={{
+              position: 'absolute',
+              right: '7px',
+              alignItems: 'center',
+              gap: '2px',
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--border-subtle)',
+              padding: '2px 6px',
+              borderRadius: '4px',
+              fontSize: '0.66rem',
+              color: 'var(--text-muted)',
+              fontWeight: '600',
+              cursor: 'pointer'
+            }}
+          >
             <Command size={10} /> K
           </div>
         </div>
       </div>
 
-      {/* Right Controls - Unified Luxury Glass Suite */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-        
-        {/* Designer Hallmark Badge: Made by Arpon */}
-        <div 
+      {/* Right Controls - Minimalist Mature Suite (Accessible on Both Desktop & Mobile) */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+
+        {/* View Mode Switcher (Grid / List) - Now available on both Desktop and Mobile */}
+        <div
           style={{
             display: 'inline-flex',
             alignItems: 'center',
-            gap: '6px',
-            height: '36px',
-            padding: '0 12px',
-            borderRadius: '10px',
-            background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.01) 100%)',
-            border: '1px solid rgba(255, 255, 255, 0.09)',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.06)',
-            backdropFilter: 'blur(12px)',
-            fontSize: '0.72rem',
-            fontWeight: '700',
-            letterSpacing: '0.08em',
-            textTransform: 'uppercase',
-            color: 'var(--text-secondary)',
-            userSelect: 'none',
-            whiteSpace: 'nowrap'
+            height: '32px',
+            background: 'var(--bg-input)',
+            padding: '2px',
+            borderRadius: '7px',
+            border: '1px solid var(--border-subtle)'
           }}
-          title="Designed & Developed by Arpon"
         >
-          <span style={{ 
-            color: 'var(--accent-primary)', 
-            fontSize: '0.75rem',
-            filter: 'drop-shadow(0 0 5px var(--accent-glow))' 
-          }}>✦</span>
-          <span style={{
-            background: 'linear-gradient(135deg, #ffffff 40%, var(--text-secondary) 100%)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            fontWeight: '800'
-          }}>
-            Made by Arpon
-          </span>
-        </div>
-
-        {/* AetherAI Copilot Neural Trigger - Matched Luxury Glass */}
-        <button
-          onClick={onOpenAiCopilot}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '7px',
-            height: '36px',
-            padding: '0 13px',
-            borderRadius: '10px',
-            background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.16) 0%, rgba(168, 85, 247, 0.16) 100%)',
-            border: '1px solid rgba(139, 92, 246, 0.35)',
-            boxShadow: '0 2px 10px rgba(99, 102, 241, 0.15), inset 0 1px 0 rgba(255,255,255,0.12)',
-            backdropFilter: 'blur(12px)',
-            color: '#ffffff',
-            fontSize: '0.82rem',
-            fontWeight: '700',
-            cursor: 'pointer',
-            transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
-            whiteSpace: 'nowrap'
-          }}
-          onMouseEnter={e => {
-            e.currentTarget.style.background = 'linear-gradient(135deg, rgba(99, 102, 241, 0.26) 0%, rgba(168, 85, 247, 0.26) 100%)';
-            e.currentTarget.style.borderColor = 'rgba(168, 85, 247, 0.55)';
-            e.currentTarget.style.transform = 'translateY(-1px)';
-            e.currentTarget.style.boxShadow = '0 6px 18px rgba(99, 102, 241, 0.3), inset 0 1px 0 rgba(255,255,255,0.2)';
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.background = 'linear-gradient(135deg, rgba(99, 102, 241, 0.16) 0%, rgba(168, 85, 247, 0.16) 100%)';
-            e.currentTarget.style.borderColor = 'rgba(139, 92, 246, 0.35)';
-            e.currentTarget.style.transform = 'translateY(0)';
-            e.currentTarget.style.boxShadow = '0 2px 10px rgba(99, 102, 241, 0.15), inset 0 1px 0 rgba(255,255,255,0.12)';
-          }}
-          title="Open AetherAI Copilot (Google Gemini 3.5 Flash Online)"
-        >
-          <div style={{
-            width: '20px',
-            height: '20px',
-            borderRadius: '6px',
-            background: 'linear-gradient(135deg, #6366f1, #a855f7)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxShadow: '0 0 8px rgba(168,85,247,0.45)'
-          }}>
-            <Bot size={13} color="#ffffff" />
-          </div>
-          <span style={{ fontWeight: '700', letterSpacing: '-0.01em' }}>AetherAI</span>
-          <span style={{
-            fontSize: '0.62rem',
-            padding: '1px 5px',
-            borderRadius: '4px',
-            background: 'rgba(255,255,255,0.12)',
-            color: '#e2e8f0',
-            fontWeight: '600'
-          }}>3.5</span>
-        </button>
-
-        {/* Activity Log Trigger */}
-        <button 
-          className="btn btn-ghost btn-icon" 
-          onClick={() => setIsActivityLogOpen(true)}
-          style={{ height: '36px', width: '36px', padding: 0, borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--border-subtle)' }}
-          title="Vault Activity Log"
-        >
-          <Activity size={17} color="var(--accent-amber)" />
-        </button>
-
-        {/* Storage Analytics Quick Button */}
-        <button 
-          className="btn btn-ghost" 
-          onClick={() => setIsAnalyticsOpen(true)}
-          style={{
-            height: '36px',
-            padding: '0 12px',
-            borderRadius: '10px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            fontSize: '0.82rem',
-            fontWeight: '600',
-            border: '1px solid var(--border-subtle)',
-            background: 'rgba(255,255,255,0.03)'
-          }}
-          title="Google Cloud Virtual Telemetry & Analytics"
-        >
-          <PieChart size={16} color="var(--accent-primary)" />
-          <span style={{ display: 'inline-block' }}>Analytics</span>
-        </button>
-
-        {/* Grid vs List View Switcher */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          height: '36px',
-          background: 'var(--bg-input)',
-          padding: '2px',
-          borderRadius: '10px',
-          border: '1px solid var(--border-subtle)'
-        }}>
           <button
             onClick={() => setViewMode('grid')}
             style={{
-              height: '30px',
-              width: '30px',
-              background: viewMode === 'grid' ? 'var(--accent-primary)' : 'transparent',
-              color: viewMode === 'grid' ? '#ffffff' : 'var(--text-muted)',
+              height: '26px',
+              width: '26px',
+              background: viewMode === 'grid' ? 'var(--bg-surface-hover)' : 'transparent',
+              color: viewMode === 'grid' ? 'var(--text-primary)' : 'var(--text-muted)',
               border: 'none',
-              borderRadius: '7px',
+              borderRadius: '5px',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)'
+              transition: 'all 0.15s ease'
             }}
             title="Grid View"
           >
-            <LayoutGrid size={15} />
+            <LayoutGrid size={13} />
           </button>
           <button
             onClick={() => setViewMode('list')}
             style={{
-              height: '30px',
-              width: '30px',
-              background: viewMode === 'list' ? 'var(--accent-primary)' : 'transparent',
-              color: viewMode === 'list' ? '#ffffff' : 'var(--text-muted)',
+              height: '26px',
+              width: '26px',
+              background: viewMode === 'list' ? 'var(--bg-surface-hover)' : 'transparent',
+              color: viewMode === 'list' ? 'var(--text-primary)' : 'var(--text-muted)',
               border: 'none',
-              borderRadius: '7px',
+              borderRadius: '5px',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)'
+              transition: 'all 0.15s ease'
             }}
             title="List View"
           >
-            <List size={15} />
+            <List size={13} />
           </button>
         </div>
 
-        {/* Music Studio Button */}
+        {/* AI Copilot Trigger */}
         <button
+          onClick={onOpenAiCopilot}
+          className="btn btn-secondary"
+          style={{
+            height: '32px',
+            padding: '0 9px',
+            borderRadius: '7px',
+            fontSize: '0.78rem',
+            fontWeight: '600',
+            gap: '5px'
+          }}
+          title="Open Gemini AI Agent"
+        >
+          <Bot size={14} color="var(--accent-primary)" />
+          <span className="desktop-only">AI Agent</span>
+        </button>
+
+        {/* Instant Vault Security Lock / Shield Button */}
+        <button
+          className="btn btn-ghost btn-icon"
           onClick={() => {
-            if (!isMusicPlaying) toggleMusicPlay(currentMusicTrack);
-            else setIsMusicStudioOpen(true);
+            const activePin = user?.pin || localStorage.getItem('storagebank_vault_pin');
+            if (activePin) {
+              window.dispatchEvent(new CustomEvent('storagebank:lock-vault'));
+              if (addToast) addToast('Vault session locked', 'info');
+            } else {
+              setActiveCategory('profile');
+              if (addToast) addToast('Configure a 4-digit PIN in Security & PIN settings to lock your vault', 'info');
+            }
           }}
-          title="Storage Bank Music Studio & Phonk Player — Click to toggle music"
-          style={{
-            height: '36px',
-            padding: '0 12px',
-            borderRadius: '10px',
-            fontSize: '0.76rem',
-            fontWeight: 700,
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            border: isMusicPlaying ? '1px solid rgba(245,158,11,0.45)' : '1px solid var(--border-subtle)',
-            background: isMusicPlaying ? 'rgba(245,158,11,0.14)' : 'rgba(255,255,255,0.03)',
-            color: isMusicPlaying ? 'var(--accent-amber)' : 'var(--text-secondary)',
-            transition: 'all 0.2s ease',
-            whiteSpace: 'nowrap'
-          }}
+          style={{ height: '32px', width: '32px', padding: 0, borderRadius: '7px', border: '1px solid var(--border-subtle)' }}
+          title={user?.pin ? 'Lock Vault Session Immediately' : 'Security & PIN Settings'}
         >
-          <Disc size={15} color="var(--accent-amber)" style={{ animation: isMusicPlaying ? 'spin 3s linear infinite' : 'none' }} />
-          <span>{isMusicPlaying ? `♪ ${currentMusicTrack?.title || 'Playing Music'}` : 'Play Music'}</span>
+          <Lock size={14} color={user?.pin ? 'var(--accent-emerald)' : 'var(--text-secondary)'} />
         </button>
 
-        {/* VIP Plan Luxury Badge */}
+        {/* Activity Log Trigger - Desktop Only */}
         <button
-          onClick={() => setIsSubscriptionOpen(true)}
-          style={{
-            height: '36px',
-            padding: '0 12px',
-            borderRadius: '10px',
-            background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.14) 0%, rgba(217, 119, 6, 0.08) 100%)',
-            border: '1px solid rgba(245, 158, 11, 0.32)',
-            color: '#fbbf24',
-            fontSize: '0.74rem',
-            fontWeight: 800,
-            letterSpacing: '0.04em',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            boxShadow: '0 2px 10px rgba(245,158,11,0.12)',
-            transition: 'all 0.2s ease',
-            whiteSpace: 'nowrap'
-          }}
-          onMouseEnter={e => {
-            e.currentTarget.style.transform = 'translateY(-1px)';
-            e.currentTarget.style.borderColor = 'rgba(245, 158, 11, 0.55)';
-            e.currentTarget.style.boxShadow = '0 4px 14px rgba(245,158,11,0.25)';
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.transform = 'translateY(0)';
-            e.currentTarget.style.borderColor = 'rgba(245, 158, 11, 0.32)';
-            e.currentTarget.style.boxShadow = '0 2px 10px rgba(245,158,11,0.12)';
-          }}
-          title="Upgrade to VIP Unlimited Google Cloud Vault"
+          className="btn btn-ghost btn-icon desktop-only"
+          onClick={() => setIsActivityLogOpen(true)}
+          style={{ height: '32px', width: '32px', padding: 0, borderRadius: '7px', border: '1px solid var(--border-subtle)' }}
+          title="Activity Log"
         >
-          <Sparkles size={13} color="#fbbf24" />
-          <span>PRO TRIAL</span>
+          <Activity size={15} color="var(--text-secondary)" />
         </button>
 
-
-        {/* 12-Theme Palette Selector */}
-        <div style={{ position: 'relative' }} ref={themeRef}>
-          <button 
-            className="btn btn-ghost btn-icon" 
-            onClick={(e) => { e.stopPropagation(); setIsThemeMenuOpen(prev => !prev); }}
-            style={{ height: '36px', width: '36px', padding: 0, borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--border-subtle)' }}
-            title="Change Theme Palette"
-          >
-            <Palette size={17} color="var(--accent-primary)" />
-          </button>
-
-          {isThemeMenuOpen && (
-            <div style={{
-              position: 'absolute',
-              right: 0,
-              top: '50px',
-              width: '240px',
-              maxHeight: '380px',
-              overflowY: 'auto',
-              background: 'var(--bg-modal)',
-              border: '1px solid var(--border-strong)',
-              borderRadius: '16px',
-              boxShadow: '0 20px 50px rgba(0,0,0,0.6)',
-              padding: '8px',
-              zIndex: 200,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '4px'
-            }}>
-              <div style={{ padding: '4px 8px 8px 8px', fontSize: '0.72rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                SELECT THEME PALETTE (12)
-              </div>
-              {themeOptions.map(t => (
-                <button
-                  key={t.key}
-                  className="btn btn-ghost"
-                  onClick={() => { changeTheme(t.key); setIsThemeMenuOpen(false); }}
-                  style={{
-                    width: '100%',
-                    justify: 'flex-start',
-                    padding: '8px 10px',
-                    fontSize: '0.82rem',
-                    background: theme === t.key ? 'rgba(99, 102, 241, 0.18)' : 'transparent',
-                    color: theme === t.key ? 'var(--accent-primary)' : 'var(--text-primary)'
-                  }}
-                >
-                  <span style={{ width: '12px', height: '12px', borderRadius: '50%', background: t.color, display: 'inline-block', flexShrink: 0 }} />
-                  <span>{t.name}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        {/* Dark/Light Theme Toggle */}
+        <button
+          className="btn btn-ghost btn-icon"
+          onClick={toggleTheme}
+          style={{ height: '32px', width: '32px', padding: 0, borderRadius: '7px', border: '1px solid var(--border-subtle)' }}
+          title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+        >
+          {theme === 'dark' ? <Sun size={15} color="var(--text-secondary)" /> : <Moon size={15} color="var(--text-secondary)" />}
+        </button>
 
         {/* User Profile Avatar */}
         <div style={{ position: 'relative' }} ref={profileRef}>
@@ -441,23 +268,21 @@ export function Navbar({ onOpenAiCopilot }) {
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '10px',
               background: 'transparent',
               border: 'none',
               cursor: 'pointer',
-              padding: '4px'
+              padding: '2px'
             }}
           >
             <img
               src={user?.avatar}
               alt={user?.username}
               style={{
-                width: '38px',
-                height: '38px',
+                width: '32px',
+                height: '32px',
                 borderRadius: '50%',
                 objectFit: 'cover',
-                border: '2px solid var(--accent-primary)',
-                boxShadow: '0 2px 10px var(--accent-glow)'
+                border: '1px solid var(--border-strong)'
               }}
             />
           </button>
@@ -466,38 +291,67 @@ export function Navbar({ onOpenAiCopilot }) {
             <div style={{
               position: 'absolute',
               right: 0,
-              top: '50px',
+              top: '42px',
               width: '240px',
               background: 'var(--bg-modal)',
-              border: '1px solid var(--border-strong)',
-              borderRadius: '16px',
-              boxShadow: '0 20px 50px rgba(0,0,0,0.6)',
-              padding: '12px',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: '9px',
+              boxShadow: '0 12px 30px rgba(0,0,0,0.5)',
+              padding: '10px',
               zIndex: 200
             }}>
-              <div style={{ paddingBottom: '10px', marginBottom: '10px', borderBottom: '1px solid var(--border-subtle)' }}>
-                <div style={{ fontWeight: '700', color: 'var(--text-primary)', fontSize: '0.95rem' }}>{user?.username}</div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{user?.email}</div>
-                <div className="badge badge-indigo" style={{ marginTop: '6px' }}>
-                  <ShieldCheck size={12} /> {user?.plan || 'Unlimited Vault'}
+              <div style={{ paddingBottom: '10px', marginBottom: '8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.88rem' }}>{getCleanUsername()}</div>
+                <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '1px' }}>
+                  {getCleanEmail()}
+                </div>
+                <div style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  marginTop: '6px',
+                  padding: '2px 7px',
+                  borderRadius: '5px',
+                  background: 'var(--bg-surface)',
+                  border: '1px solid var(--border-subtle)',
+                  fontSize: '0.7rem',
+                  color: 'var(--text-secondary)',
+                  fontWeight: '500'
+                }}>
+                  <ShieldCheck size={11} color="var(--accent-primary)" />
+                  <span>{formatPlanDisplay(user?.plan)}</span>
                 </div>
               </div>
 
               <button
                 className="btn btn-ghost"
                 onClick={() => { setActiveCategory('profile'); setIsProfileMenuOpen(false); }}
-                style={{ width: '100%', justifyContent: 'flex-start', fontSize: '0.85rem' }}
+                style={{ width: '100%', justifyContent: 'flex-start', fontSize: '0.82rem', padding: '6px 8px' }}
               >
-                <User size={16} />
-                <span>Switch / Manage Profile</span>
+                <User size={14} />
+                <span>Account Settings</span>
               </button>
 
               <button
                 className="btn btn-ghost"
-                onClick={() => { signOut(); setIsProfileMenuOpen(false); }}
-                style={{ width: '100%', justifyContent: 'flex-start', fontSize: '0.85rem', color: 'var(--accent-rose)' }}
+                onClick={() => {
+                  if (onOpenSubscription) onOpenSubscription();
+                  setIsProfileMenuOpen(false);
+                }}
+                style={{ width: '100%', justifyContent: 'flex-start', fontSize: '0.82rem', padding: '6px 8px' }}
               >
-                <LogOut size={16} />
+                <HardDrive size={14} />
+                <span>Storage & Plans</span>
+              </button>
+
+              <div style={{ height: '1px', background: 'var(--border-subtle)', margin: '6px 0' }} />
+
+              <button
+                className="btn btn-ghost"
+                onClick={() => { signOut(); setIsProfileMenuOpen(false); }}
+                style={{ width: '100%', justifyContent: 'flex-start', fontSize: '0.82rem', padding: '6px 8px', color: 'var(--accent-rose)' }}
+              >
+                <LogOut size={14} />
                 <span>Sign Out</span>
               </button>
             </div>

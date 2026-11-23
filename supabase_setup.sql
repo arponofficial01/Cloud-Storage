@@ -1,20 +1,25 @@
 -- ==============================================================================
 -- StorageBank Cloud Vault — Supabase Database Setup & Schema
 -- Run this in your Supabase Dashboard: SQL Editor -> New Query -> Run
--- Project URL: https://tevidnouvazxndgzlvsl.supabase.co
+-- Project URL: https://nshouyvazixvyvxdbvwc.supabase.co
 -- ==============================================================================
 
 -- 1. PROFILES TABLE
 create table if not exists public.profiles (
   id text primary key,
+  email text,
   username text,
   avatar text,
-  plan text default 'Unlimited Private Vault',
+  plan text default 'Free Tier (512 GB)',
   theme text default 'dark',
   pin text,
+  status text default 'active',
   created_at timestamptz default timezone('utc'::text, now()) not null,
   updated_at timestamptz default timezone('utc'::text, now()) not null
 );
+
+alter table public.profiles add column if not exists email text;
+alter table public.profiles add column if not exists status text default 'active';
 
 -- 2. VAULT FILES TABLE
 create table if not exists public.vault_files (
@@ -25,12 +30,16 @@ create table if not exists public.vault_files (
   type text,
   category text,
   size bigint default 0,
+  storage_path text,
   starred boolean default false,
   in_trash boolean default false,
   tags text[] default '{}'::text[],
   created_at timestamptz default timezone('utc'::text, now()) not null,
   updated_at timestamptz default timezone('utc'::text, now()) not null
 );
+
+-- Ensure storage_path column exists if table was already created
+alter table public.vault_files add column if not exists storage_path text;
 
 -- 3. VAULT FOLDERS TABLE
 create table if not exists public.vault_folders (
@@ -130,3 +139,30 @@ begin
   end if;
 end;
 $$;
+
+-- 10. REAL BINARY CLOUD STORAGE BUCKET (vault-files)
+insert into storage.buckets (id, name, public)
+values ('vault-files', 'vault-files', false)
+on conflict (id) do nothing;
+
+-- Storage Bucket Policies
+drop policy if exists "Vault files insert policy" on storage.objects;
+create policy "Vault files insert policy"
+  on storage.objects for insert
+  with check (bucket_id = 'vault-files');
+
+drop policy if exists "Vault files select policy" on storage.objects;
+create policy "Vault files select policy"
+  on storage.objects for select
+  using (bucket_id = 'vault-files');
+
+drop policy if exists "Vault files update policy" on storage.objects;
+create policy "Vault files update policy"
+  on storage.objects for update
+  using (bucket_id = 'vault-files');
+
+drop policy if exists "Vault files delete policy" on storage.objects;
+create policy "Vault files delete policy"
+  on storage.objects for delete
+  using (bucket_id = 'vault-files');
+

@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useStorage } from '../context/StorageContext';
-import { QuickSnippetModal } from './QuickSnippetModal';
+import { useAuth } from '../context/AuthContext';
+import { getPlanQuota, formatBytes } from '../utils/planQuotas';
 
 import {
   Cloud,
   FolderPlus,
+  FilePlus,
   Upload,
   HardDrive,
   Image as ImageIcon,
@@ -14,18 +16,13 @@ import {
   Code2,
   Star,
   Trash2,
-  PieChart,
-  Zap,
-  FileCode,
   RefreshCw,
   PanelLeftClose,
   PanelLeftOpen,
-  UserCircle2,
-  FileCode2,
   Monitor,
-  Sliders,
-  Disc,
-  Sparkles
+  User,
+  Shield,
+  X
 } from 'lucide-react';
 
 export function Sidebar({ isOpen, isCollapsed, onToggleCollapse, onCloseMobile }) {
@@ -35,362 +32,393 @@ export function Sidebar({ isOpen, isCollapsed, onToggleCollapse, onCloseMobile }
     navigateToFolder,
     setIsUploadOpen,
     setIsNewFolderOpen,
-    setIsAnalyticsOpen,
     setIsSubscriptionOpen,
-    setIsMusicStudioOpen,
     setIsDriveModalOpen,
     storageStats
   } = useStorage();
 
-  const [isSnippetOpen, setIsSnippetOpen] = useState(false);
-  const [isDesktopDriveOpen, setIsDesktopDriveOpen] = useState(false);
-
   const handleCategoryClick = (catKey) => {
-    setActiveCategory(catKey);
-    if (catKey === 'all' && typeof navigateToFolder === 'function') {
-      navigateToFolder(null, 'My Vault');
+    if (typeof navigateToFolder === 'function') {
+      navigateToFolder(null, 'My Vault', catKey);
+    } else {
+      setActiveCategory(catKey);
     }
     if (onCloseMobile) onCloseMobile();
   };
 
-  const formatSize = (bytes) => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
+  const { user } = useAuth();
+  const planInfo = getPlanQuota(user?.plan);
+  const usedBytes = storageStats?.totalBytes || 0;
+  const quotaBytes = planInfo.quotaBytes;
+  const usagePercentage = Math.min(100, Math.max(0.01, (usedBytes / quotaBytes) * 100)).toFixed(1);
 
-  const usedBytes = storageStats.totalBytes || 0;
-  const usagePercentage = Math.min(100, Math.max(1, (usedBytes / (1024 * 1024 * 10)) * 100)).toFixed(1);
-
-  const sidebarWidth = isCollapsed ? '72px' : '260px';
+  const sidebarWidth = isCollapsed ? '64px' : '240px';
 
   return (
     <>
-      <aside className={`sidebar glass-panel ${isOpen ? 'open' : ''}`} style={{
+      <aside className={`sidebar ${isOpen ? 'open' : ''}`} style={{
         width: sidebarWidth,
         height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        padding: isCollapsed ? '20px 8px' : '24px 16px',
+        padding: isCollapsed ? '16px 8px' : '18px 14px',
         borderRight: '1px solid var(--border-subtle)',
         backgroundColor: 'var(--bg-secondary)',
         zIndex: 100,
         flexShrink: 0,
-        transition: 'width 0.3s cubic-bezier(0.16, 1, 0.3, 1), padding 0.3s ease'
+        transition: 'width 0.25s cubic-bezier(0.16, 1, 0.3, 1), padding 0.25s ease'
       }}>
-        {/* Header & Toggle Button */}
+        {/* Header & Logo */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: isCollapsed ? 'center' : 'space-between',
           gap: '8px',
-          marginBottom: '24px',
-          padding: '0 2px'
+          marginBottom: '20px',
+          padding: '0 4px'
         }}>
           {!isCollapsed && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
               <div style={{
-                width: '38px',
-                height: '38px',
-                borderRadius: '10px',
-                background: 'var(--accent-gradient)',
+                width: '30px',
+                height: '30px',
+                borderRadius: '7px',
+                background: 'var(--accent-primary)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 6px 20px var(--accent-glow)',
+                color: '#ffffff',
                 flexShrink: 0
               }}>
-                <Cloud size={22} color="#ffffff" />
+                <Cloud size={16} />
               </div>
-              <div style={{ minWidth: 0, whiteSpace: 'nowrap' }}>
-                <h2 style={{ fontSize: '1.1rem', fontWeight: '800', margin: 0, background: 'var(--accent-gradient)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', letterSpacing: '-0.02em' }}>
-                  Storage Bank
-                </h2>
-                <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '700', letterSpacing: '0.05em' }}>
-                  UNLIMITED VAULT
-                </span>
-              </div>
+              <span style={{ fontSize: '0.98rem', fontWeight: '700', color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+                StorageBank
+              </span>
             </div>
           )}
 
+          {/* Desktop Only: Collapse/Expand Sidebar Button */}
           <button
-            className="btn btn-ghost btn-icon"
+            className="btn btn-ghost btn-icon desktop-only"
             onClick={onToggleCollapse}
-            style={{ padding: '8px', color: 'var(--text-muted)' }}
+            style={{ padding: '6px', color: 'var(--text-muted)' }}
             title={isCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
           >
-            {isCollapsed ? <PanelLeftOpen size={20} color="var(--accent-primary)" /> : <PanelLeftClose size={20} />}
+            {isCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
           </button>
-        </div>
 
-        {/* Main Action Buttons */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
-          <button 
-            className="btn btn-primary" 
-            onClick={() => { setIsUploadOpen(true); if (onCloseMobile) onCloseMobile(); }}
-            style={{ width: '100%', justifyContent: 'center', padding: isCollapsed ? '10px' : '12px' }}
-            title="Upload File"
-          >
-            <Upload size={18} />
-            {!isCollapsed && <span>Upload File</span>}
-          </button>
-          
-          {!isCollapsed ? (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-              <button 
-                className="btn btn-secondary" 
-                onClick={() => { setIsNewFolderOpen(true); if (onCloseMobile) onCloseMobile(); }}
-                style={{ width: '100%', justifyContent: 'center', padding: '8px', fontSize: '0.78rem' }}
-              >
-                <FolderPlus size={15} />
-                <span>Folder</span>
-              </button>
-              <button 
-                className="btn btn-secondary" 
-                onClick={() => setIsSnippetOpen(true)}
-                style={{ width: '100%', justifyContent: 'center', padding: '8px', fontSize: '0.78rem' }}
-              >
-                <FileCode2 size={15} color="var(--accent-cyan)" />
-                <span>Snippet</span>
-              </button>
-            </div>
-          ) : (
+          {/* Mobile Only: Close Drawer Button */}
+          {onCloseMobile && (
             <button
-              className="btn btn-secondary btn-icon"
-              onClick={() => setIsSnippetOpen(true)}
-              title="Quick Code Snippet"
-              style={{ width: '100%', justifyContent: 'center' }}
+              className="btn btn-ghost btn-icon mobile-menu-btn"
+              onClick={onCloseMobile}
+              style={{ padding: '6px', color: 'var(--text-muted)' }}
+              title="Close Menu"
             >
-              <FileCode2 size={18} color="var(--accent-cyan)" />
+              <X size={16} />
             </button>
           )}
         </div>
 
+        {/* Primary Action Buttons */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '18px' }}>
+          <button
+            className="btn btn-primary"
+            onClick={() => { setIsUploadOpen(true); if (onCloseMobile) onCloseMobile(); }}
+            style={{
+              width: '100%',
+              justifyContent: 'center',
+              padding: isCollapsed ? '8px' : '8px 12px',
+              fontSize: '0.8rem',
+              fontWeight: 600,
+              borderRadius: '7px',
+              gap: '7px'
+            }}
+            title="Upload Files"
+          >
+            <Upload size={14} />
+            {!isCollapsed && <span>Upload Files</span>}
+          </button>
+
+          {isCollapsed ? (
+            <button
+              className="btn btn-secondary"
+              onClick={() => { setIsNewFolderOpen('folder'); if (onCloseMobile) onCloseMobile(); }}
+              style={{
+                width: '100%',
+                justifyContent: 'center',
+                padding: '8px',
+                borderRadius: '7px'
+              }}
+              title="New Folder or Document"
+            >
+              <FolderPlus size={14} color="var(--text-secondary)" />
+            </button>
+          ) : (
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: '4px'
+            }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => { setIsNewFolderOpen('folder'); if (onCloseMobile) onCloseMobile(); }}
+                style={{
+                  padding: '6px 8px',
+                  borderRadius: '6px',
+                  fontSize: '0.75rem',
+                  fontWeight: 500,
+                  gap: '5px',
+                  color: 'var(--text-secondary)'
+                }}
+                title="Create a new folder"
+              >
+                <FolderPlus size={13} />
+                <span>Folder</span>
+              </button>
+
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => { setIsNewFolderOpen('file'); if (onCloseMobile) onCloseMobile(); }}
+                style={{
+                  padding: '6px 8px',
+                  borderRadius: '6px',
+                  fontSize: '0.75rem',
+                  fontWeight: 500,
+                  gap: '5px',
+                  color: 'var(--text-secondary)'
+                }}
+                title="Create a new document"
+              >
+                <FilePlus size={13} />
+                <span>Document</span>
+              </button>
+            </div>
+          )}
+        </div>
+
         {/* Navigation Categories */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
           {!isCollapsed && (
-            <div style={{ padding: '8px', fontSize: '0.72rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              STORAGE VIEWS
+            <div style={{ padding: '6px 8px 4px 8px', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              Vault
             </div>
           )}
           
           <NavItem 
-            icon={<HardDrive size={18} />} 
+            icon={<HardDrive size={15} />} 
             label="All Files" 
             isCollapsed={isCollapsed}
             active={activeCategory === 'all'} 
             onClick={() => handleCategoryClick('all')} 
           />
           <NavItem 
-            icon={<ImageIcon size={18} />} 
-            label="Photos & Media" 
+            icon={<Star size={15} />} 
+            label="Starred" 
             isCollapsed={isCollapsed}
-            active={activeCategory === 'image'} 
-            onClick={() => handleCategoryClick('image')} 
+            active={activeCategory === 'starred'} 
+            onClick={() => handleCategoryClick('starred')} 
           />
           <NavItem 
-            icon={<FileText size={18} />} 
+            icon={<Trash2 size={15} />} 
+            label="Trash" 
+            isCollapsed={isCollapsed}
+            active={activeCategory === 'trash'} 
+            onClick={() => handleCategoryClick('trash')} 
+          />
+          
+          {!isCollapsed && (
+            <div style={{ margin: '12px 0 4px 0', padding: '6px 8px 4px 8px', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              Categories
+            </div>
+          )}
+
+          <NavItem 
+            icon={<FileText size={15} />} 
             label="Documents" 
             isCollapsed={isCollapsed}
             active={activeCategory === 'document'} 
             onClick={() => handleCategoryClick('document')} 
           />
           <NavItem 
-            icon={<Video size={18} />} 
-            label="Video Vault" 
+            icon={<ImageIcon size={15} />} 
+            label="Photos & Media" 
+            isCollapsed={isCollapsed}
+            active={activeCategory === 'image'} 
+            onClick={() => handleCategoryClick('image')} 
+          />
+          <NavItem 
+            icon={<Video size={15} />} 
+            label="Videos" 
             isCollapsed={isCollapsed}
             active={activeCategory === 'video'} 
             onClick={() => handleCategoryClick('video')} 
           />
           <NavItem 
-            icon={<Music size={18} />} 
-            label="Audio Files" 
+            icon={<Music size={15} />} 
+            label="Audio" 
             isCollapsed={isCollapsed}
             active={activeCategory === 'audio'} 
             onClick={() => handleCategoryClick('audio')} 
           />
           <NavItem 
-            icon={<Code2 size={18} />} 
-            label="Code & Scripts" 
+            icon={<Code2 size={15} />} 
+            label="Code" 
             isCollapsed={isCollapsed}
             active={activeCategory === 'code'} 
             onClick={() => handleCategoryClick('code')} 
           />
-          
+
           {!isCollapsed && (
-            <div style={{ margin: '12px 0 4px 0', padding: '8px', fontSize: '0.72rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              TOOLS & TRASH
+            <div style={{ margin: '12px 0 4px 0', padding: '6px 8px 4px 8px', fontSize: '0.68rem', fontWeight: '600', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              Tools & Settings
             </div>
           )}
 
           <NavItem 
-            icon={<Sliders size={18} color="var(--accent-amber)" />} 
-            label="Edited Media Vault" 
-            isCollapsed={isCollapsed}
-            active={activeCategory === 'edited'} 
-            onClick={() => handleCategoryClick('edited')} 
-          />
-
-          <NavItem 
-            icon={<RefreshCw size={18} color="var(--accent-cyan)" />} 
-            label="Format Converter Studio" 
+            icon={<RefreshCw size={15} />} 
+            label="Format Converter" 
             isCollapsed={isCollapsed}
             active={activeCategory === 'converter'} 
             onClick={() => handleCategoryClick('converter')} 
           />
-
           <NavItem 
-            icon={<Disc size={18} color="var(--accent-amber)" style={{ animation: 'spin 4s linear infinite' }} />} 
-            label="Music Studio & Phonk" 
+            icon={<Monitor size={15} />} 
+            label="Desktop Drive" 
             isCollapsed={isCollapsed}
             active={false} 
-            onClick={() => { setIsMusicStudioOpen(true); if (onCloseMobile) onCloseMobile(); }} 
-          />
-
-          <NavItem 
-            icon={<Sparkles size={18} color="var(--accent-amber)" className="pulse" />} 
-            label="VIP Plan & 7-Day Trial" 
-            isCollapsed={isCollapsed}
-            active={false} 
-            onClick={() => { setIsSubscriptionOpen(true); if (onCloseMobile) onCloseMobile(); }} 
-          />
-
-          <NavItem 
-            icon={<Monitor size={18} color="var(--accent-primary)" />} 
-            label="Windows PC Drive" 
-            isCollapsed={isCollapsed}
-            active={false} 
+            className="desktop-only"
             onClick={() => { setIsDriveModalOpen(true); if (onCloseMobile) onCloseMobile(); }} 
           />
-
           <NavItem 
-            icon={<Star size={18} />} 
-            label="Starred Items" 
-            isCollapsed={isCollapsed}
-            active={activeCategory === 'starred'} 
-            onClick={() => handleCategoryClick('starred')} 
-          />
-          <NavItem 
-            icon={<Trash2 size={18} />} 
-            label="Trash" 
-            isCollapsed={isCollapsed}
-            active={activeCategory === 'trash'} 
-            onClick={() => handleCategoryClick('trash')} 
-          />
-
-          {!isCollapsed && (
-            <div style={{ margin: '12px 0 4px 0', padding: '8px', fontSize: '0.72rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              ACCOUNT
-            </div>
-          )}
-
-          <NavItem 
-            icon={<UserCircle2 size={18} color="var(--accent-cyan)" />} 
-            label="Account & Profile" 
+            icon={<User size={15} />} 
+            label="Account Settings" 
             isCollapsed={isCollapsed}
             active={activeCategory === 'profile'} 
             onClick={() => handleCategoryClick('profile')} 
           />
+          {(user?.email?.toLowerCase().includes('arpon') ||
+            (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('storagebank_admin_session_unlocked') === 'true')) && (
+            <NavItem 
+              icon={<Shield size={15} />} 
+              label="Staff Admin (Internal)" 
+              isCollapsed={isCollapsed}
+              active={activeCategory === 'admin'} 
+              onClick={() => handleCategoryClick('admin')} 
+            />
+          )}
         </div>
 
-        {/* Storage Gauge Widget */}
+        {/* Minimalist Matte Storage Quota Footer */}
         {!isCollapsed ? (
           <div style={{
             background: 'var(--bg-surface)',
             border: '1px solid var(--border-subtle)',
-            borderRadius: 'var(--radius-md)',
-            padding: '14px',
-            marginTop: '16px'
+            borderRadius: '9px',
+            padding: '12px',
+            marginTop: '12px'
           }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-              <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <Cloud size={13} color="var(--accent-cyan)" /> Google Cloud Vault
+              <span style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-primary)' }}>
+                Vault Storage
               </span>
-              <span className="badge badge-emerald" style={{ fontSize: '0.62rem', padding: '2px 6px' }}>
-                <Zap size={9} /> UNLIMITED
-              </span>
+              <button
+                onClick={() => setIsSubscriptionOpen(true)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--accent-primary)',
+                  fontSize: '0.72rem',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  padding: 0
+                }}
+              >
+                Upgrade
+              </button>
             </div>
-            <div style={{ fontSize: '1.05rem', fontWeight: '800', color: 'var(--text-primary)', marginBottom: '4px' }}>
-              {formatSize(usedBytes)} <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: '500' }}>/ ∞ Unlimited</span>
-            </div>
-            <div style={{ fontSize: '0.68rem', color: 'var(--accent-emerald)', fontWeight: '600', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <span>●</span> 0 B PC Used • 100% Virtual Cloud
-            </div>
-            
+
             <div style={{
               width: '100%',
-              height: '5px',
+              height: '4px',
               background: 'rgba(255, 255, 255, 0.08)',
-              borderRadius: '10px',
+              borderRadius: '999px',
               overflow: 'hidden',
-              marginBottom: '10px'
+              marginBottom: '6px'
             }}>
               <div style={{
-                width: '100%',
+                width: `${usagePercentage}%`,
                 height: '100%',
-                background: 'linear-gradient(90deg, #10b981 0%, #06b6d4 50%, #6366f1 100%)',
-                borderRadius: '10px'
+                background: 'var(--accent-primary)',
+                borderRadius: '999px'
               }} />
             </div>
 
-            <button 
-              className="btn btn-ghost" 
-              onClick={() => { setIsAnalyticsOpen(true); if (onCloseMobile) onCloseMobile(); }}
-              style={{ width: '100%', justifyContent: 'center', fontSize: '0.76rem', padding: '6px' }}
-            >
-              <PieChart size={13} />
-              <span>Cloud Telemetry & Health</span>
-            </button>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+              <span>{formatBytes(usedBytes)} of {formatBytes(quotaBytes)}</span>
+              <span style={{ color: 'var(--accent-emerald)', fontWeight: 600 }}>Cloud Active</span>
+            </div>
 
-            <div style={{ marginTop: '8px', textAlign: 'center', fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: '600', letterSpacing: '0.04em' }}>
-              Crafted with <span style={{ color: 'var(--accent-rose)' }}>♥</span> <span style={{ background: 'var(--accent-gradient)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', fontWeight: '800' }}>Made by Arpon</span>
+            <div style={{
+              marginTop: '10px',
+              paddingTop: '8px',
+              borderTop: '1px solid var(--border-subtle)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: '0.67rem',
+              color: 'var(--text-muted)',
+              letterSpacing: '0.01em'
+            }}>
+              <span>Developed By</span>
+              <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>Arpon Chakraborty</span>
             </div>
           </div>
         ) : (
           <button
             className="btn btn-ghost btn-icon"
-            onClick={() => setIsAnalyticsOpen(true)}
-            title="Storage Analytics"
-            style={{ marginTop: '12px', justifyContent: 'center' }}
+            onClick={() => setIsSubscriptionOpen(true)}
+            title="Storage Quota"
+            style={{ marginTop: '10px', justifyContent: 'center' }}
           >
-            <PieChart size={20} color="var(--accent-primary)" />
+            <Cloud size={16} color="var(--accent-primary)" />
           </button>
         )}
       </aside>
-
-      <QuickSnippetModal isOpen={isSnippetOpen} onClose={() => setIsSnippetOpen(false)} />
     </>
   );
 }
 
-function NavItem({ icon, label, isCollapsed, active, onClick }) {
+function NavItem({ icon, label, isCollapsed, active, onClick, className = '' }) {
   return (
     <button
       onClick={onClick}
       title={isCollapsed ? label : undefined}
+      className={className}
       style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: isCollapsed ? 'center' : 'flex-start',
-        gap: '12px',
+        gap: '10px',
         width: '100%',
-        padding: isCollapsed ? '10px' : '10px 14px',
-        borderRadius: 'var(--radius-md)',
+        padding: isCollapsed ? '8px' : '7px 10px',
+        borderRadius: '7px',
         border: 'none',
-        background: active ? 'rgba(99, 102, 241, 0.18)' : 'transparent',
-        color: active ? 'var(--accent-primary)' : 'var(--text-secondary)',
+        background: active ? 'var(--bg-surface-hover)' : 'transparent',
+        color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
         fontWeight: active ? '600' : '500',
-        fontSize: '0.88rem',
+        fontSize: '0.82rem',
         cursor: 'pointer',
-        transition: 'var(--transition-fast)',
+        transition: 'background-color 0.15s ease, color 0.15s ease',
         whiteSpace: 'nowrap',
         overflow: 'hidden'
       }}
       onMouseEnter={(e) => {
         if (!active) {
-          e.currentTarget.style.background = 'var(--bg-surface-hover)';
+          e.currentTarget.style.background = 'var(--bg-surface)';
           e.currentTarget.style.color = 'var(--text-primary)';
         }
       }}
@@ -401,7 +429,9 @@ function NavItem({ icon, label, isCollapsed, active, onClick }) {
         }
       }}
     >
-      <span style={{ color: active ? 'var(--accent-primary)' : 'var(--text-muted)' }}>{icon}</span>
+      <span style={{ color: active ? 'var(--accent-primary)' : 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>
+        {icon}
+      </span>
       {!isCollapsed && <span>{label}</span>}
     </button>
   );

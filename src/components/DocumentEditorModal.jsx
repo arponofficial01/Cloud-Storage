@@ -1,648 +1,1117 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useStorage } from '../context/StorageContext';
 import {
-  X, Save, Download, Replace, Copy, FileText, Code2, FileCode,
-  Eye, Edit3, Bold, Italic, Underline, Strikethrough, AlignLeft,
-  AlignCenter, AlignRight, AlignJustify, List, ListOrdered, CheckSquare,
-  Heading1, Heading2, Heading3, Sparkles, Highlighter, RotateCw,
-  ZoomIn, ZoomOut, Maximize2, Type, StickyNote, Stamp, CheckCircle2,
-  AlertCircle, RefreshCw, Code, Layers, File, Play
+  getDocumentKind,
+  parseDocxBlob,
+  buildDocxBlob,
+  parseLegacyWordBlob,
+  parseSpreadsheetBlob,
+  rowsToCsv,
+  parseCsvToRows,
+  extractPdfDetails,
+  compileTextToPdfBlob,
+  applyPdfOperations
+} from '../utils/documentParser';
+import {
+  X,
+  Save,
+  Download,
+  Copy,
+  FileText,
+  Code2,
+  Check,
+  WrapText,
+  Bold,
+  Italic,
+  Heading1,
+  Heading2,
+  List,
+  RotateCw,
+  Stamp,
+  FilePlus,
+  Table,
+  Plus,
+  Trash2,
+  RefreshCw
 } from 'lucide-react';
 
 export function DocumentEditorModal({ file, isOpen, onClose }) {
-  const { saveFile, replaceFile, reloadVault, addToast, logActivity } = useStorage();
+  const { saveFile, replaceFile, reloadVault, addToast, logActivity, ensureFileBlob } = useStorage();
 
-  // Determine sub-type
-  const ext = file?.name?.split('.').pop()?.toLowerCase() || '';
-  const isHtml = ['html', 'htm'].includes(ext);
-  const isCode = file?.category === 'code' || ['js', 'jsx', 'ts', 'tsx', 'css', 'json', 'py', 'java', 'cpp', 'c', 'php', 'sql', 'sh', 'xml'].includes(ext);
-  const isPdf = ext === 'pdf' || file?.type === 'application/pdf';
-  const isDocx = ['docx', 'doc', 'rtf', 'odt'].includes(ext);
-  const isTxtOrMd = ['txt', 'md', 'csv', 'log'].includes(ext);
+  const ext = (file?.name?.split('.').pop() || '').toLowerCase();
+  const kind = getDocumentKind(file);
+  const isPdf = kind === 'pdf';
+  const isDocx = kind === 'docx';
+  const isLegacyWord = kind === 'legacy-word';
+  const isWord = isDocx || isLegacyWord;
+  const isSheet = kind === 'xlsx' || kind === 'csv';
+  const isHtml = kind === 'html';
+  const isMarkdown = kind === 'markdown';
+  const isJson = kind === 'json';
+  const isCode = kind === 'code';
 
-  // Editor State
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [saveMode, setSaveMode] = useState('new'); // 'new' | 'replace'
-  const [editorMode, setEditorMode] = useState('edit'); // 'edit' | 'split' | 'preview'
+  const [saveMode, setSaveMode] = useState('replace'); // 'replace' | 'new'
+  const [viewMode, setViewMode] = useState('split'); // 'edit' | 'split' | 'preview'
+  const [wordWrap, setWordWrap] = useState(true);
+  const [copied, setCopied] = useState(false);
 
-  // DOCX / Rich Text Styling state
-  const [fontFamily, setFontFamily] = useState('Inter, sans-serif');
-  const [fontSize, setFontSize] = useState('15px');
-  const [textAlign, setTextAlign] = useState('left');
-  const [paperMode, setPaperMode] = useState('a4'); // 'a4' | 'letter' | 'full'
-  const [lineHeight, setLineHeight] = useState('1.7');
+  // Spreadsheet Table Editor State
+  const [sheetRows, setSheetRows] = useState([['Column 1', 'Column 2'], ['', '']]);
+  const [sheetEditMode, setSheetEditMode] = useState('grid'); // 'grid' | 'raw'
 
-  // PDF Markup State
-  const [pdfPage, setPdfPage] = useState(1);
-  const [pdfTotalPages, setPdfTotalPages] = useState(3);
-  const [pdfZoom, setPdfZoom] = useState(100);
-  const [pdfRotation, setPdfRotation] = useState(0);
-  const [pdfAnnotations, setPdfAnnotations] = useState([]);
-  const [pdfStamp, setPdfStamp] = useState(null); // 'APPROVED' | 'CONFIDENTIAL' | 'DRAFT'
-  const [activeAnnotationType, setActiveAnnotationType] = useState('none'); // 'text' | 'highlight' | 'stamp'
-  const [annotationText, setAnnotationText] = useState('');
-  const [highlightColor, setHighlightColor] = useState('#fef08a');
+  // PDF Studio Editor State
+  const [pdfMode, setPdfMode] = useState('tools'); // 'tools' | 'writer'
+  const [pdfWorkingBlob, setPdfWorkingBlob] = useState(null);
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState(null);
+  const [pdfPageCount, setPdfPageCount] = useState(1);
+  const [pdfRotateDeg, setPdfRotateDeg] = useState(0);
+  const [pdfWatermark, setPdfWatermark] = useState('');
+  const [pdfAppendText, setPdfAppendText] = useState('');
+  const [pdfOrientation, setPdfOrientation] = useState('portrait');
+  const [pdfCompiling, setPdfCompiling] = useState(false);
 
-  const editorAreaRef = useRef(null);
+  const textareaRef = useRef(null);
 
-  // Load content from Blob
   useEffect(() => {
+    let cancelled = false;
+
     if (!file || !isOpen) return;
 
-    setLoading(true);
-    if (file.blob) {
-      if (isPdf) {
-        // PDF loaded as blob URL
-        setLoading(false);
-      } else {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          setContent(e.target?.result || '');
-          setLoading(false);
-        };
-        reader.onerror = () => {
-          setContent('// Error reading file content');
-          setLoading(false);
-        };
-        reader.readAsText(file.blob);
+    const initEditor = async () => {
+      setLoading(true);
+      setPdfRotateDeg(0);
+      setPdfWatermark('');
+      setPdfAppendText('');
+
+      let blob = file.blob;
+      if (!(blob instanceof Blob) && typeof ensureFileBlob === 'function') {
+        blob = await ensureFileBlob(file);
       }
-    } else if (file.content) {
-      setContent(file.content);
-      setLoading(false);
-    } else {
-      setContent('');
-      setLoading(false);
+      if (cancelled) return;
+      const isMobileScreen = typeof window !== 'undefined' && window.innerWidth <= 768;
+      const defaultRichView = isMobileScreen ? 'edit' : 'split';
+
+      if (isPdf) {
+        setViewMode(defaultRichView);
+        if (blob instanceof Blob) {
+          const typedPdf = blob.type === 'application/pdf' ? blob : new Blob([blob], { type: 'application/pdf' });
+          setPdfWorkingBlob(typedPdf);
+          const details = await extractPdfDetails(typedPdf);
+          if (!cancelled) {
+            setPdfPageCount(details.pageCount || 1);
+            setContent(
+              details.extractedText ||
+                `# ${file.name.replace(/\.pdf$/i, '')}\n\nWrite or edit document content here to compile a multi-page PDF.`
+            );
+            setPdfMode('tools');
+          }
+        } else {
+          setContent(`# ${file.name.replace(/\.pdf$/i, '')}\n\n`);
+          setPdfMode('writer');
+        }
+      } else if (isDocx && blob instanceof Blob) {
+        setViewMode(defaultRichView);
+        const parsed = await parseDocxBlob(blob);
+        if (!cancelled) setContent(parsed.text || '');
+      } else if (isLegacyWord && blob instanceof Blob) {
+        setViewMode(defaultRichView);
+        const parsed = await parseLegacyWordBlob(blob, ext);
+        if (!cancelled) setContent(parsed.text || '');
+      } else if (isSheet && blob instanceof Blob) {
+        const parsed = await parseSpreadsheetBlob(blob, ext);
+        if (!cancelled) {
+          const rows = parsed.rows?.length > 0 ? parsed.rows : [['Column 1', 'Column 2'], ['', '']];
+          setSheetRows(rows);
+          setContent(parsed.csvText || rowsToCsv(rows));
+          setSheetEditMode('grid');
+        }
+      } else if (blob instanceof Blob) {
+        setViewMode(isMarkdown || isHtml ? defaultRichView : 'edit');
+        const txt = await blob.text();
+        if (!cancelled) setContent(txt);
+      } else if (typeof file.content === 'string') {
+        setViewMode(isMarkdown || isHtml || isWord ? defaultRichView : 'edit');
+        setContent(file.content);
+      } else {
+        setContent('');
+      }
+
+      if (!cancelled) setLoading(false);
+    };
+
+    initEditor();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [file, isOpen, isPdf, isDocx, isLegacyWord, isWord, isSheet, isMarkdown, isHtml, ext, ensureFileBlob]);
+
+  // Manage PDF Object URL lifecycle
+  useEffect(() => {
+    if (!pdfWorkingBlob) {
+      setPdfPreviewUrl(null);
+      return;
     }
-  }, [file, isOpen]);
+    const url = URL.createObjectURL(pdfWorkingBlob);
+    setPdfPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [pdfWorkingBlob]);
 
-  // Insert HTML Tag Helper for HTML / Code Editor
-  const insertHtmlTag = (openTag, closeTag = '') => {
-    const textarea = editorAreaRef.current;
-    if (!textarea) return;
+  if (!isOpen || !file) return null;
 
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const selected = content.substring(start, end);
-    const replacement = `${openTag}${selected}${closeTag}`;
+  const lines = content.split('\n').length;
+  const words = content.trim().split(/\s+/).filter(Boolean).length;
+  const chars = content.length;
 
-    const newContent = content.substring(0, start) + replacement + content.substring(end);
-    setContent(newContent);
-
+  // Rich Text / Markdown Insertion Helper
+  const insertFormatting = (prefix, suffix = '') => {
+    const el = textareaRef.current;
+    if (!el) {
+      setContent(prev => prev + '\n' + prefix + suffix);
+      return;
+    }
+    const start = el.selectionStart || 0;
+    const end = el.selectionEnd || 0;
+    const selected = content.substring(start, end) || 'Text';
+    const replacement = `${prefix}${selected}${suffix}`;
+    const updated = content.substring(0, start) + replacement + content.substring(end);
+    setContent(updated);
     setTimeout(() => {
-      textarea.focus();
-      textarea.setSelectionRange(start + openTag.length, start + openTag.length + selected.length);
-    }, 50);
+      el.focus();
+      el.setSelectionRange(start + prefix.length, start + prefix.length + selected.length);
+    }, 10);
   };
 
-  // Format JSON Helper
+  // Spreadsheet Helpers
+  const handleCellChange = (rIdx, cIdx, val) => {
+    setSheetRows(prev => {
+      const next = prev.map(r => [...r]);
+      next[rIdx][cIdx] = val;
+      setContent(rowsToCsv(next));
+      return next;
+    });
+  };
+
+  const handleAddRow = () => {
+    setSheetRows(prev => {
+      const cols = prev[0]?.length || 2;
+      const next = [...prev, Array(cols).fill('')];
+      setContent(rowsToCsv(next));
+      return next;
+    });
+  };
+
+  const handleAddColumn = () => {
+    setSheetRows(prev => {
+      const next = prev.map((row, idx) => [...row, idx === 0 ? `Column ${row.length + 1}` : '']);
+      setContent(rowsToCsv(next));
+      return next;
+    });
+  };
+
+  const handleRemoveRow = (rIdx) => {
+    if (sheetRows.length <= 1) return;
+    setSheetRows(prev => {
+      const next = prev.filter((_, idx) => idx !== rIdx);
+      setContent(rowsToCsv(next));
+      return next;
+    });
+  };
+
+  // PDF Operations Helpers
+  const handleApplyPdfPageTools = async () => {
+    if (!pdfWorkingBlob) return;
+    setPdfCompiling(true);
+    try {
+      const updatedBlob = await applyPdfOperations(pdfWorkingBlob, {
+        rotateDeg: pdfRotateDeg,
+        watermarkText: pdfWatermark,
+        appendPageText: pdfAppendText
+      });
+      const details = await extractPdfDetails(updatedBlob);
+      setPdfWorkingBlob(updatedBlob);
+      setPdfPageCount(details.pageCount || pdfPageCount);
+      setPdfRotateDeg(0);
+      setPdfAppendText('');
+      addToast('Applied PDF edits to live preview', 'success');
+    } catch (err) {
+      addToast('Could not modify PDF: ' + err.message, 'error');
+    } finally {
+      setPdfCompiling(false);
+    }
+  };
+
+  const handleCompileTextToPdf = async () => {
+    setPdfCompiling(true);
+    try {
+      const compiled = await compileTextToPdfBlob(file.name.replace(/\.pdf$/i, ''), content, {
+        orientation: pdfOrientation
+      });
+      const details = await extractPdfDetails(compiled);
+      setPdfWorkingBlob(compiled);
+      setPdfPageCount(details.pageCount || 1);
+      addToast('Compiled multi-page PDF preview', 'success');
+    } catch (err) {
+      addToast('Failed to compile PDF: ' + err.message, 'error');
+    } finally {
+      setPdfCompiling(false);
+    }
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(content);
+    setCopied(true);
+    addToast('Copied to clipboard', 'info');
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   const handleFormatJson = () => {
     try {
       const parsed = JSON.parse(content);
       setContent(JSON.stringify(parsed, null, 2));
-      addToast('JSON formatted successfully', 'success');
+      addToast('Formatted JSON', 'success');
     } catch {
       addToast('Invalid JSON syntax', 'error');
     }
   };
 
-  // PDF Stamp Adder
-  const addPdfAnnotation = (e) => {
-    if (!isPdf || activeAnnotationType === 'none') return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    const newAnno = {
-      id: Date.now(),
-      page: pdfPage,
-      x,
-      y,
-      type: activeAnnotationType,
-      text: annotationText || (activeAnnotationType === 'stamp' ? pdfStamp : 'Annotation note'),
-      color: highlightColor
-    };
-
-    setPdfAnnotations(prev => [...prev, newAnno]);
-    addToast(`Added ${activeAnnotationType} to page ${pdfPage}`, 'info');
-  };
-
-  // Export Edited Blob
-  const getEditedBlob = () => {
+  const buildOutputBlobAndMeta = async () => {
     if (isPdf) {
-      // PDF return original blob or annotated metadata
-      return file.blob || new Blob([content], { type: 'application/pdf' });
+      let finalPdf = pdfWorkingBlob;
+      if (pdfMode === 'writer' || !finalPdf) {
+        finalPdf = await compileTextToPdfBlob(file.name.replace(/\.pdf$/i, ''), content, {
+          orientation: pdfOrientation
+        });
+      } else if (pdfRotateDeg || pdfWatermark.trim() || pdfAppendText.trim()) {
+        finalPdf = await applyPdfOperations(finalPdf, {
+          rotateDeg: pdfRotateDeg,
+          watermarkText: pdfWatermark,
+          appendPageText: pdfAppendText
+        });
+      }
+      return {
+        blob: finalPdf,
+        mime: 'application/pdf',
+        extOverride: '.pdf'
+      };
     }
 
-    let mimeType = 'text/plain';
-    if (isHtml) mimeType = 'text/html';
-    else if (ext === 'css') mimeType = 'text/css';
-    else if (ext === 'js') mimeType = 'text/javascript';
-    else if (ext === 'json') mimeType = 'application/json';
-    else if (isDocx) mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    if (isDocx || isLegacyWord) {
+      const docxBlob = await buildDocxBlob(file.name.replace(/\.[^.]+$/, ''), content);
+      return {
+        blob: docxBlob,
+        mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        extOverride: '.docx'
+      };
+    }
 
-    return new Blob([content], { type: mimeType });
+    if (isSheet) {
+      const csvOut = sheetEditMode === 'grid' ? rowsToCsv(sheetRows) : content;
+      const csvBlob = new Blob([csvOut], { type: 'text/csv' });
+      return {
+        blob: csvBlob,
+        mime: 'text/csv',
+        extOverride: ext === 'xlsx' ? '.csv' : `.${ext || 'csv'}`
+      };
+    }
+
+    const mime =
+      file.type ||
+      (isMarkdown ? 'text/markdown' : isHtml ? 'text/html' : isJson ? 'application/json' : isCode ? 'text/javascript' : 'text/plain');
+    return {
+      blob: new Blob([content], { type: mime }),
+      mime,
+      extOverride: null
+    };
   };
 
-  // Save / Replace Handler
-  const handleSave = async () => {
+  const handleDownload = async () => {
+    const { blob } = await buildOutputBlobAndMeta();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const handleSaveToVault = async () => {
     setSaving(true);
     try {
-      const editedBlob = getEditedBlob();
-      const now = new Date().toISOString();
+      const { blob, mime, extOverride } = await buildOutputBlobAndMeta();
 
       if (saveMode === 'replace') {
-        await replaceFile(file.id, editedBlob, {
-          updatedAt: now,
-          size: editedBlob.size,
-          tags: [...(file.tags || []), 'edited']
-        });
-        addToast(`Replaced "${file.name}" with edited document!`, 'success');
-        logActivity('EDIT', `Replaced document "${file.name}"`, 'success');
+        await replaceFile(file.id, blob, { type: mime, size: blob.size });
+        addToast(`Saved changes to "${file.name}"`, 'success');
+        if (logActivity) logActivity('EDIT', `Edited document: ${file.name}`);
       } else {
-        const base = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
-        const fileExt = file.name.substring(file.name.lastIndexOf('.')) || '';
-        const newName = `${base}_edited${fileExt}`;
+        const dotIndex = file.name.lastIndexOf('.');
+        const base = dotIndex !== -1 ? file.name.substring(0, dotIndex) : file.name;
+        const extStr = extOverride || (dotIndex !== -1 ? file.name.substring(dotIndex) : '.txt');
+        const newName = `${base}_edited_${Date.now()}${extStr}`;
 
-        const newFileRecord = {
+        await saveFile({
           id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-          userId: file.userId,
-          folderId: file.folderId || null,
           name: newName,
-          type: file.type || 'text/plain',
+          type: mime,
+          size: blob.size,
           category: file.category || 'document',
-          size: editedBlob.size,
-          blob: editedBlob,
-          starred: false,
-          inTrash: false,
-          createdAt: now,
-          updatedAt: now,
-          tags: ['edited']
-        };
+          blob,
+          folderId: file.folderId || null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          tags: ['edited', file.category || 'document']
+        });
 
-        await saveFile(newFileRecord);
-        addToast(`Saved "${newName}" as new file!`, 'success');
-        logActivity('EDIT', `Created edited document copy "${newName}"`, 'success');
+        addToast(`Saved new version "${newName}"`, 'success');
+        if (logActivity) logActivity('SAVE', `Saved new version: ${newName}`);
       }
 
       await reloadVault();
       onClose();
     } catch (err) {
       console.error(err);
-      addToast('Failed to save document edit.', 'error');
+      addToast('Failed to save file: ' + err.message, 'error');
     } finally {
       setSaving(false);
     }
   };
 
-  if (!isOpen || !file) return null;
-
-  // Stats calculation
-  const wordsCount = content ? content.trim().split(/\s+/).filter(Boolean).length : 0;
-  const charCount = content ? content.length : 0;
-  const lineCount = content ? content.split('\n').length : 0;
+  const renderFormattedPreview = () => {
+    return (content || '').split('\n').map((line, idx) => {
+      if (line.startsWith('# ')) {
+        return <h1 key={idx} style={{ fontSize: '1.45rem', fontWeight: 700, margin: '14px 0 8px 0' }}>{line.slice(2)}</h1>;
+      }
+      if (line.startsWith('## ')) {
+        return <h2 key={idx} style={{ fontSize: '1.2rem', fontWeight: 600, margin: '12px 0 6px 0' }}>{line.slice(3)}</h2>;
+      }
+      if (line.startsWith('### ')) {
+        return <h3 key={idx} style={{ fontSize: '1.04rem', fontWeight: 600, margin: '10px 0 4px 0' }}>{line.slice(4)}</h3>;
+      }
+      if (line.startsWith('- ') || line.startsWith('* ')) {
+        return (
+          <div key={idx} style={{ display: 'flex', gap: '8px', margin: '3px 0 3px 12px' }}>
+            <span>&bull;</span>
+            <span>{line.slice(2)}</span>
+          </div>
+        );
+      }
+      if (line.trim() === '---') {
+        return <hr key={idx} style={{ border: 'none', borderTop: '1px solid var(--border-subtle)', margin: '14px 0' }} />;
+      }
+      if (!line.trim()) {
+        return <div key={idx} style={{ height: '10px' }} />;
+      }
+      return <p key={idx} style={{ margin: '0 0 8px 0', lineHeight: 1.65 }}>{line}</p>;
+    });
+  };
 
   return (
     <div className="modal-overlay" style={{ zIndex: 3000 }} onClick={onClose}>
       <div
         className="modal-content"
-        onClick={e => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
         style={{
-          maxWidth: '1360px',
-          width: '98vw',
-          height: '96vh',
+          width: '95vw',
+          maxWidth: '1220px',
+          height: '90vh',
           display: 'flex',
           flexDirection: 'column',
-          overflow: 'hidden'
+          padding: 0,
+          borderRadius: '10px',
+          overflow: 'hidden',
+          background: 'var(--bg-modal)',
+          border: '1px solid var(--border-subtle)',
+          boxShadow: '0 24px 60px rgba(0, 0, 0, 0.55)'
         }}
       >
-        {/* Header Bar */}
-        <div className="modal-header" style={{ padding: '12px 20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <FileText size={20} color="var(--accent-cyan)" />
-            <div>
-              <h3 style={{ fontSize: '1rem', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span>{isHtml ? 'HTML Web Editor' : isCode ? 'Code Studio' : isPdf ? 'PDF Markup Suite' : 'Document Studio'}</span>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 400 }}>— {file.name}</span>
-              </h3>
+        {/* ── Top Header Bar ── */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '10px 16px',
+          borderBottom: '1px solid var(--border-subtle)',
+          background: 'var(--bg-surface)',
+          flexShrink: 0,
+          gap: '12px',
+          flexWrap: 'wrap'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+            <div style={{
+              width: '30px',
+              height: '30px',
+              borderRadius: '6px',
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border-subtle)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: isPdf ? '#ef4444' : isWord ? '#3b82f6' : isSheet ? '#10b981' : 'var(--accent-primary)',
+              flexShrink: 0
+            }}>
+              {isCode ? <Code2 size={15} /> : isSheet ? <Table size={15} /> : <FileText size={15} />}
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: '0.88rem', color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {file.name}
+              </div>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span>{isPdf ? `PDF Studio (${pdfPageCount} page${pdfPageCount !== 1 ? 's' : ''})` : isWord ? 'Word OpenXML Editor' : isSheet ? `Spreadsheet (${sheetRows.length} rows)` : `${ext.toUpperCase()} Editor`}</span>
+                {!isSheet && (
+                  <>
+                    <span>&bull;</span>
+                    <span>{lines} lines</span>
+                    <span>&bull;</span>
+                    <span>{words} words</span>
+                    <span>&bull;</span>
+                    <span>{chars} chars</span>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            {/* View Mode Switches */}
-            {(isHtml || isCode || isTxtOrMd) && (
-              <div style={{ display: 'flex', background: 'var(--bg-input)', borderRadius: '8px', padding: '2px', border: '1px solid var(--border-subtle)' }}>
+          {/* Center Mode Switchers */}
+          {isPdf ? (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              background: 'var(--bg-input)',
+              borderRadius: '6px',
+              padding: '2px',
+              border: '1px solid var(--border-subtle)'
+            }}>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setPdfMode('tools')}
+                style={{
+                  padding: '4px 10px',
+                  fontSize: '0.74rem',
+                  borderRadius: '5px',
+                  background: pdfMode === 'tools' ? 'var(--bg-surface)' : 'transparent',
+                  color: pdfMode === 'tools' ? 'var(--text-primary)' : 'var(--text-muted)'
+                }}
+              >
+                PDF Page Tools
+              </button>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setPdfMode('writer')}
+                style={{
+                  padding: '4px 10px',
+                  fontSize: '0.74rem',
+                  borderRadius: '5px',
+                  background: pdfMode === 'writer' ? 'var(--bg-surface)' : 'transparent',
+                  color: pdfMode === 'writer' ? 'var(--text-primary)' : 'var(--text-muted)'
+                }}
+              >
+                Edit &amp; Compile Text
+              </button>
+            </div>
+          ) : isSheet ? (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              background: 'var(--bg-input)',
+              borderRadius: '6px',
+              padding: '2px',
+              border: '1px solid var(--border-subtle)'
+            }}>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setSheetEditMode('grid')}
+                style={{
+                  padding: '4px 10px',
+                  fontSize: '0.74rem',
+                  borderRadius: '5px',
+                  background: sheetEditMode === 'grid' ? 'var(--bg-surface)' : 'transparent',
+                  color: sheetEditMode === 'grid' ? 'var(--text-primary)' : 'var(--text-muted)'
+                }}
+              >
+                Table Grid
+              </button>
+              <button
+                className="btn btn-ghost"
+                onClick={() => {
+                  setContent(rowsToCsv(sheetRows));
+                  setSheetEditMode('raw');
+                }}
+                style={{
+                  padding: '4px 10px',
+                  fontSize: '0.74rem',
+                  borderRadius: '5px',
+                  background: sheetEditMode === 'raw' ? 'var(--bg-surface)' : 'transparent',
+                  color: sheetEditMode === 'raw' ? 'var(--text-primary)' : 'var(--text-muted)'
+                }}
+              >
+                Raw CSV
+              </button>
+            </div>
+          ) : (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              background: 'var(--bg-input)',
+              borderRadius: '6px',
+              padding: '2px',
+              border: '1px solid var(--border-subtle)'
+            }}>
+              {['edit', 'split', 'preview'].map((m) => (
                 <button
-                  onClick={() => setEditorMode('edit')}
+                  key={m}
+                  className="btn btn-ghost"
+                  onClick={() => setViewMode(m)}
                   style={{
-                    padding: '5px 12px',
-                    borderRadius: '6px',
-                    border: 'none',
-                    fontSize: '0.75rem',
-                    fontWeight: '700',
-                    cursor: 'pointer',
-                    background: editorMode === 'edit' ? 'var(--accent-primary)' : 'transparent',
-                    color: editorMode === 'edit' ? '#fff' : 'var(--text-muted)'
+                    padding: '4px 10px',
+                    fontSize: '0.74rem',
+                    borderRadius: '5px',
+                    textTransform: 'capitalize',
+                    background: viewMode === m ? 'var(--bg-surface)' : 'transparent',
+                    color: viewMode === m ? 'var(--text-primary)' : 'var(--text-muted)'
                   }}
                 >
-                  <Edit3 size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> Code/Text
+                  {m === 'edit' ? 'Editor' : m === 'split' ? 'Split View' : 'Page Preview'}
                 </button>
+              ))}
+            </div>
+          )}
 
-                {isHtml && (
-                  <button
-                    onClick={() => setEditorMode('split')}
-                    style={{
-                      padding: '5px 12px',
-                      borderRadius: '6px',
-                      border: 'none',
-                      fontSize: '0.75rem',
-                      fontWeight: '700',
-                      cursor: 'pointer',
-                      background: editorMode === 'split' ? 'var(--accent-primary)' : 'transparent',
-                      color: editorMode === 'split' ? '#fff' : 'var(--text-muted)'
-                    }}
-                  >
-                    <Layers size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> Split View
-                  </button>
-                )}
-
-                <button
-                  onClick={() => setEditorMode('preview')}
-                  style={{
-                    padding: '5px 12px',
-                    borderRadius: '6px',
-                    border: 'none',
-                    fontSize: '0.75rem',
-                    fontWeight: '700',
-                    cursor: 'pointer',
-                    background: editorMode === 'preview' ? 'var(--accent-primary)' : 'transparent',
-                    color: editorMode === 'preview' ? '#fff' : 'var(--text-muted)'
-                  }}
-                >
-                  <Eye size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> Live Render
-                </button>
-              </div>
+          {/* Right Quick Actions */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+            {isJson && (
+              <button
+                className="btn btn-secondary"
+                onClick={handleFormatJson}
+                style={{ padding: '4px 8px', fontSize: '0.74rem', borderRadius: '6px' }}
+              >
+                Format JSON
+              </button>
             )}
 
-            <button className="btn btn-ghost btn-icon" onClick={onClose}>
-              <X size={18} />
+            {!isSheet && !isPdf && (
+              <button
+                className="btn btn-secondary"
+                onClick={() => setWordWrap(!wordWrap)}
+                style={{
+                  padding: '4px 8px',
+                  fontSize: '0.74rem',
+                  borderRadius: '6px',
+                  gap: '4px',
+                  color: wordWrap ? 'var(--accent-primary)' : 'var(--text-muted)'
+                }}
+                title="Toggle Word Wrap"
+              >
+                <WrapText size={13} />
+                <span className="desktop-only">Wrap</span>
+              </button>
+            )}
+
+            <button
+              className="btn btn-secondary"
+              onClick={handleCopy}
+              style={{ padding: '4px 8px', fontSize: '0.74rem', borderRadius: '6px', gap: '4px' }}
+              title="Copy content"
+            >
+              {copied ? <Check size={13} color="var(--accent-emerald)" /> : <Copy size={13} />}
+              <span className="desktop-only">{copied ? 'Copied' : 'Copy'}</span>
+            </button>
+
+            <button
+              className="btn btn-ghost btn-icon"
+              onClick={onClose}
+              style={{ padding: '4px', height: '28px', width: '28px' }}
+            >
+              <X size={16} />
             </button>
           </div>
         </div>
 
-        {/* Specialized Sub-Toolbars */}
-        {/* 1. HTML Specific Insert Toolbar */}
-        {isHtml && editorMode !== 'preview' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 16px', background: 'var(--bg-input)', borderBottom: '1px solid var(--border-subtle)', overflowX: 'auto' }}>
-            <span style={{ fontSize: '0.7rem', fontWeight: '800', color: 'var(--accent-cyan)', textTransform: 'uppercase', marginRight: '8px' }}>HTML Inserts:</span>
-            {[
-              { label: '<h1>', open: '<h1>', close: '</h1>' },
-              { label: '<p>', open: '<p>', close: '</p>' },
-              { label: '<a>', open: '<a href="#">', close: '</a>' },
-              { label: '<img>', open: '<img src="', close: '" alt="image" />' },
-              { label: '<button>', open: '<button class="btn">', close: '</button>' },
-              { label: '<div>', open: '<div class="container">\n  ', close: '\n</div>' },
-              { label: '<style>', open: '<style>\n  body { font-family: sans-serif; }\n', close: '</style>' },
-              { label: '<script>', open: '<script>\n  console.log("ready");\n', close: '</script>' }
-            ].map(tag => (
-              <button
-                key={tag.label}
-                onClick={() => insertHtmlTag(tag.open, tag.close)}
-                style={{
-                  padding: '4px 8px',
-                  borderRadius: '6px',
-                  border: '1px solid var(--border-subtle)',
-                  background: 'var(--bg-surface)',
-                  color: 'var(--text-primary)',
-                  fontSize: '0.74rem',
-                  fontFamily: 'var(--font-mono)',
-                  cursor: 'pointer'
-                }}
-              >
-                {tag.label}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* 2. DOCX / Rich Text Specific Formatting Toolbar */}
-        {(isDocx || isTxtOrMd) && !isHtml && !isCode && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', background: 'var(--bg-input)', borderBottom: '1px solid var(--border-subtle)', flexWrap: 'wrap' }}>
-            {/* Heading presets */}
-            <button className="btn btn-ghost btn-icon" onClick={() => insertHtmlTag('# ')} title="Heading 1"><Heading1 size={16} /></button>
-            <button className="btn btn-ghost btn-icon" onClick={() => insertHtmlTag('## ')} title="Heading 2"><Heading2 size={16} /></button>
-            <button className="btn btn-ghost btn-icon" onClick={() => insertHtmlTag('### ')} title="Heading 3"><Heading3 size={16} /></button>
-            <div style={{ width: '1px', height: '18px', background: 'var(--border-subtle)' }} />
-
-            {/* Styling */}
-            <button className="btn btn-ghost btn-icon" onClick={() => insertHtmlTag('**', '**')} title="Bold"><Bold size={16} /></button>
-            <button className="btn btn-ghost btn-icon" onClick={() => insertHtmlTag('*', '*')} title="Italic"><Italic size={16} /></button>
-            <button className="btn btn-ghost btn-icon" onClick={() => insertHtmlTag('~~', '~~')} title="Strikethrough"><Strikethrough size={16} /></button>
-            <button className="btn btn-ghost btn-icon" onClick={() => insertHtmlTag('`', '`')} title="Monospace Code"><Code size={16} /></button>
-            <div style={{ width: '1px', height: '18px', background: 'var(--border-subtle)' }} />
-
-            {/* Alignments */}
-            {['left', 'center', 'right', 'justify'].map(al => (
-              <button
-                key={al}
-                className="btn btn-ghost btn-icon"
-                onClick={() => setTextAlign(al)}
-                style={{ background: textAlign === al ? 'rgba(99,102,241,0.2)' : 'transparent', color: textAlign === al ? 'var(--accent-primary)' : 'var(--text-muted)' }}
-              >
-                {al === 'left' && <AlignLeft size={16} />}
-                {al === 'center' && <AlignCenter size={16} />}
-                {al === 'right' && <AlignRight size={16} />}
-                {al === 'justify' && <AlignJustify size={16} />}
-              </button>
-            ))}
-            <div style={{ width: '1px', height: '18px', background: 'var(--border-subtle)' }} />
-
-            {/* Font choice */}
-            <select
-              value={fontFamily}
-              onChange={e => setFontFamily(e.target.value)}
-              style={{ background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '4px 8px', fontSize: '0.78rem' }}
+        {/* ── Formatting Toolbar (for Word, Markdown, Text, HTML, and PDF Writer) ── */}
+        {!loading && ((isPdf && pdfMode === 'writer') || (!isPdf && !isSheet && !isCode)) && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '6px 16px',
+            borderBottom: '1px solid var(--border-subtle)',
+            background: 'var(--bg-input)',
+            flexWrap: 'wrap'
+          }}>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => insertFormatting('# ')}
+              style={{ padding: '4px 8px', fontSize: '0.74rem', borderRadius: '5px', gap: '4px' }}
+              title="Heading 1"
             >
-              <option value="Inter, sans-serif">Modern Inter</option>
-              <option value="Georgia, serif">Classic Georgia</option>
-              <option value="var(--font-mono)">Courier Monospace</option>
-              <option value="system-ui, sans-serif">System UI</option>
-            </select>
-
-            {/* Paper Mode */}
-            <select
-              value={paperMode}
-              onChange={e => setPaperMode(e.target.value)}
-              style={{ background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '4px 8px', fontSize: '0.78rem' }}
+              <Heading1 size={13} />
+              <span>H1</span>
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => insertFormatting('## ')}
+              style={{ padding: '4px 8px', fontSize: '0.74rem', borderRadius: '5px', gap: '4px' }}
+              title="Heading 2"
             >
-              <option value="a4">📄 A4 Document Page</option>
-              <option value="letter">📝 Letter Page</option>
-              <option value="full">🖥️ Edge-to-Edge Workspace</option>
-            </select>
-          </div>
-        )}
+              <Heading2 size={13} />
+              <span>H2</span>
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => insertFormatting('**', '**')}
+              style={{ padding: '4px 8px', fontSize: '0.74rem', borderRadius: '5px', gap: '4px' }}
+              title="Bold"
+            >
+              <Bold size={13} />
+              <span>Bold</span>
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => insertFormatting('*', '*')}
+              style={{ padding: '4px 8px', fontSize: '0.74rem', borderRadius: '5px', gap: '4px' }}
+              title="Italic"
+            >
+              <Italic size={13} />
+              <span>Italic</span>
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => insertFormatting('- ')}
+              style={{ padding: '4px 8px', fontSize: '0.74rem', borderRadius: '5px', gap: '4px' }}
+              title="Bullet List"
+            >
+              <List size={13} />
+              <span>Bullet List</span>
+            </button>
 
-        {/* 3. PDF Annotation Toolbar */}
-        {isPdf && (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '8px 16px', background: 'var(--bg-input)', borderBottom: '1px solid var(--border-subtle)', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Page:</span>
-              <button className="btn btn-ghost" onClick={() => setPdfPage(p => Math.max(1, p - 1))} disabled={pdfPage <= 1} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Prev</button>
-              <span style={{ fontSize: '0.8rem', fontWeight: '700', fontFamily: 'var(--font-mono)' }}>{pdfPage} / {pdfTotalPages}</span>
-              <button className="btn btn-ghost" onClick={() => setPdfPage(p => Math.min(pdfTotalPages, p + 1))} disabled={pdfPage >= pdfTotalPages} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Next</button>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              {/* Rotation */}
-              <button className="btn btn-ghost" onClick={() => setPdfRotation(r => (r + 90) % 360)} style={{ fontSize: '0.75rem' }}>
-                <RotateCw size={14} /> Rotate ({pdfRotation}°)
-              </button>
-
-              {/* Zoom */}
-              <button className="btn btn-ghost btn-icon" onClick={() => setPdfZoom(z => Math.max(50, z - 15))}><ZoomOut size={15} /></button>
-              <span style={{ fontSize: '0.78rem', fontFamily: 'var(--font-mono)' }}>{pdfZoom}%</span>
-              <button className="btn btn-ghost btn-icon" onClick={() => setPdfZoom(z => Math.min(200, z + 15))}><ZoomIn size={15} /></button>
-            </div>
-
-            {/* Annotation Type Picker */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              {['none', 'text', 'highlight', 'stamp'].map(type => (
-                <button
-                  key={type}
-                  onClick={() => setActiveAnnotationType(type)}
-                  style={{
-                    padding: '4px 10px',
-                    borderRadius: '6px',
-                    border: '1px solid var(--border-subtle)',
-                    fontSize: '0.75rem',
-                    fontWeight: '700',
-                    cursor: 'pointer',
-                    background: activeAnnotationType === type ? 'var(--accent-primary)' : 'var(--bg-surface)',
-                    color: activeAnnotationType === type ? '#fff' : 'var(--text-muted)'
-                  }}
+            {isPdf && pdfMode === 'writer' && (
+              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <select
+                  value={pdfOrientation}
+                  onChange={(e) => setPdfOrientation(e.target.value)}
+                  className="input-text"
+                  style={{ height: '28px', padding: '0 8px', fontSize: '0.74rem', width: 'auto' }}
                 >
-                  {type === 'none' && 'Pointer'}
-                  {type === 'text' && '📝 Sticky Text'}
-                  {type === 'highlight' && '🖍️ Highlight'}
-                  {type === 'stamp' && '🏷️ Stamp'}
+                  <option value="portrait">A4 Portrait</option>
+                  <option value="landscape">A4 Landscape</option>
+                </select>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleCompileTextToPdf}
+                  disabled={pdfCompiling}
+                  style={{ padding: '4px 10px', fontSize: '0.74rem', borderRadius: '5px', gap: '5px' }}
+                >
+                  <RefreshCw size={12} className={pdfCompiling ? 'spin' : ''} />
+                  <span>Update PDF Preview</span>
                 </button>
-              ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Main Editor Workspace ── */}
+        {loading ? (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.84rem' }}>
+            Loading document workspace...
+          </div>
+        ) : isPdf ? (
+          /* PDF STUDIO WORKSPACE */
+          <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
+            {/* Left Control / Editor Panel */}
+            <div style={{
+              width: '45%',
+              minWidth: '310px',
+              borderRight: '1px solid var(--border-subtle)',
+              background: 'var(--bg-secondary)',
+              display: 'flex',
+              flexDirection: 'column',
+              overflowY: 'auto'
+            }}>
+              {pdfMode === 'tools' ? (
+                <div style={{ padding: '18px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <div style={{
+                    padding: '12px 14px',
+                    borderRadius: '8px',
+                    background: 'var(--bg-surface)',
+                    border: '1px solid var(--border-subtle)',
+                    fontSize: '0.78rem',
+                    color: 'var(--text-secondary)'
+                  }}>
+                    Modify the existing PDF structure (rotate pages, stamp a watermark, or append a new page) and preview changes live on the right.
+                  </div>
+
+                  {/* Rotate Pages */}
+                  <div style={{
+                    padding: '14px',
+                    borderRadius: '8px',
+                    background: 'var(--bg-surface)',
+                    border: '1px solid var(--border-subtle)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
+                  }}>
+                    <div>
+                      <div style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)' }}>Rotate All Pages</div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                        Queued rotation: {pdfRotateDeg}°
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => setPdfRotateDeg(d => (d + 90) % 360)}
+                      style={{ fontSize: '0.76rem', padding: '6px 12px', borderRadius: '6px', gap: '5px' }}
+                    >
+                      <RotateCw size={13} />
+                      <span>Rotate +90°</span>
+                    </button>
+                  </div>
+
+                  {/* Watermark / Header Stamp */}
+                  <div style={{
+                    padding: '14px',
+                    borderRadius: '8px',
+                    background: 'var(--bg-surface)',
+                    border: '1px solid var(--border-subtle)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                      <Stamp size={14} color="var(--accent-primary)" />
+                      <span>Stamp Diagonal Watermark</span>
+                    </div>
+                    <input
+                      type="text"
+                      className="input-text"
+                      placeholder="e.g. CONFIDENTIAL / APPROVED"
+                      value={pdfWatermark}
+                      onChange={(e) => setPdfWatermark(e.target.value)}
+                      style={{ fontSize: '0.82rem', padding: '8px 10px', borderRadius: '6px' }}
+                    />
+                  </div>
+
+                  {/* Append Page */}
+                  <div style={{
+                    padding: '14px',
+                    borderRadius: '8px',
+                    background: 'var(--bg-surface)',
+                    border: '1px solid var(--border-subtle)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                      <FilePlus size={14} color="var(--accent-emerald)" />
+                      <span>Append New Page with Notes</span>
+                    </div>
+                    <textarea
+                      className="input-text"
+                      rows={5}
+                      placeholder="Type content to append as a new page at the end of this PDF..."
+                      value={pdfAppendText}
+                      onChange={(e) => setPdfAppendText(e.target.value)}
+                      style={{ fontSize: '0.82rem', padding: '8px 10px', borderRadius: '6px', resize: 'vertical' }}
+                    />
+                  </div>
+
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleApplyPdfPageTools}
+                    disabled={pdfCompiling}
+                    style={{ width: '100%', justifyContent: 'center', padding: '9px', fontSize: '0.82rem', borderRadius: '7px' }}
+                  >
+                    <RefreshCw size={14} className={pdfCompiling ? 'spin' : ''} />
+                    <span>{pdfCompiling ? 'Updating PDF...' : 'Apply Edits to Live PDF Preview'}</span>
+                  </button>
+                </div>
+              ) : (
+                <textarea
+                  ref={textareaRef}
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  placeholder="Write or edit document text to compile into a PDF..."
+                  style={{
+                    flex: 1,
+                    width: '100%',
+                    padding: '16px',
+                    background: 'transparent',
+                    color: 'var(--text-primary)',
+                    border: 'none',
+                    outline: 'none',
+                    resize: 'none',
+                    fontFamily: 'inherit',
+                    fontSize: '0.86rem',
+                    lineHeight: 1.65
+                  }}
+                />
+              )}
             </div>
 
-            {activeAnnotationType === 'stamp' && (
-              <select
-                value={pdfStamp || 'APPROVED'}
-                onChange={e => setPdfStamp(e.target.value)}
-                style={{ background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '4px 8px', fontSize: '0.78rem' }}
-              >
-                <option value="APPROVED">✅ APPROVED</option>
-                <option value="CONFIDENTIAL">🔒 CONFIDENTIAL</option>
-                <option value="DRAFT">📌 DRAFT</option>
-                <option value="URGENT">⚠️ URGENT</option>
-              </select>
-            )}
-
-            {activeAnnotationType === 'text' && (
-              <input
-                type="text"
-                placeholder="Enter note text..."
-                value={annotationText}
-                onChange={e => setAnnotationText(e.target.value)}
-                style={{ background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '4px 8px', fontSize: '0.78rem', width: '140px' }}
+            {/* Right Live PDF Viewer */}
+            <div style={{ flex: 1, background: '#18181b', display: 'flex', flexDirection: 'column' }}>
+              {pdfPreviewUrl ? (
+                <iframe
+                  src={pdfPreviewUrl}
+                  title="Live PDF Preview"
+                  style={{ width: '100%', height: '100%', border: 'none', background: '#ffffff' }}
+                />
+              ) : (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.84rem' }}>
+                  Click &ldquo;Update PDF Preview&rdquo; to render PDF pages.
+                </div>
+              )}
+            </div>
+          </div>
+        ) : isSheet ? (
+          /* SPREADSHEET WORKSPACE */
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden', background: 'var(--bg-secondary)' }}>
+            {sheetEditMode === 'grid' ? (
+              <>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '8px 16px',
+                  borderBottom: '1px solid var(--border-subtle)',
+                  background: 'var(--bg-input)'
+                }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={handleAddRow}
+                    style={{ fontSize: '0.75rem', padding: '5px 10px', borderRadius: '6px', gap: '4px' }}
+                  >
+                    <Plus size={12} />
+                    <span>Add Row</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={handleAddColumn}
+                    style={{ fontSize: '0.75rem', padding: '5px 10px', borderRadius: '6px', gap: '4px' }}
+                  >
+                    <Plus size={12} />
+                    <span>Add Column</span>
+                  </button>
+                </div>
+                <div style={{ flex: 1, overflow: 'auto', padding: '12px' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', background: 'var(--bg-surface)', fontSize: '0.8rem' }}>
+                    <tbody>
+                      {sheetRows.map((row, rIdx) => (
+                        <tr key={rIdx}>
+                          <td style={{
+                            width: '38px',
+                            textAlign: 'center',
+                            border: '1px solid var(--border-subtle)',
+                            background: 'var(--bg-input)',
+                            color: 'var(--text-muted)',
+                            fontSize: '0.72rem'
+                          }}>
+                            {rIdx === 0 ? 'HDR' : rIdx}
+                          </td>
+                          {row.map((cellVal, cIdx) => (
+                            <td key={cIdx} style={{ border: '1px solid var(--border-subtle)', padding: 0 }}>
+                              <input
+                                type="text"
+                                value={cellVal}
+                                onChange={(e) => handleCellChange(rIdx, cIdx, e.target.value)}
+                                style={{
+                                  width: '100%',
+                                  minWidth: '110px',
+                                  padding: '7px 10px',
+                                  border: 'none',
+                                  outline: 'none',
+                                  background: rIdx === 0 ? 'var(--bg-secondary)' : 'transparent',
+                                  color: 'var(--text-primary)',
+                                  fontWeight: rIdx === 0 ? 600 : 400,
+                                  fontSize: '0.8rem'
+                                }}
+                              />
+                            </td>
+                          ))}
+                          <td style={{ width: '34px', textAlign: 'center', border: '1px solid var(--border-subtle)' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveRow(rIdx)}
+                              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px' }}
+                              title="Delete row"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : (
+              <textarea
+                value={content}
+                onChange={(e) => {
+                  setContent(e.target.value);
+                  setSheetRows(parseCsvToRows(e.target.value));
+                }}
+                style={{
+                  flex: 1,
+                  width: '100%',
+                  padding: '16px',
+                  background: 'transparent',
+                  color: 'var(--text-primary)',
+                  border: 'none',
+                  outline: 'none',
+                  resize: 'none',
+                  fontFamily: 'var(--font-mono, monospace)',
+                  fontSize: '0.84rem',
+                  lineHeight: 1.6
+                }}
               />
             )}
           </div>
+        ) : (
+          /* WORD / MARKDOWN / HTML / CODE / TEXT WORKSPACE */
+          <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
+            {(viewMode === 'edit' || viewMode === 'split') && (
+              <div style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                background: 'var(--bg-secondary)',
+                borderRight: viewMode === 'split' ? '1px solid var(--border-subtle)' : 'none'
+              }}>
+                <textarea
+                  ref={textareaRef}
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  placeholder="Write or edit your document content here..."
+                  spellCheck={!isCode}
+                  style={{
+                    flex: 1,
+                    width: '100%',
+                    padding: '18px',
+                    background: 'transparent',
+                    color: 'var(--text-primary)',
+                    border: 'none',
+                    outline: 'none',
+                    resize: 'none',
+                    fontFamily: isCode ? 'var(--font-mono, monospace)' : 'inherit',
+                    fontSize: '0.86rem',
+                    lineHeight: '1.65',
+                    whiteSpace: wordWrap ? 'pre-wrap' : 'pre',
+                    overflowY: 'auto',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+            )}
+
+            {(viewMode === 'preview' || viewMode === 'split') && (
+              <div style={{
+                flex: 1,
+                padding: '24px 32px',
+                overflowY: 'auto',
+                background: 'var(--bg-surface)',
+                color: 'var(--text-primary)',
+                fontSize: '0.9rem',
+                lineHeight: '1.7'
+              }}>
+                {isHtml ? (
+                  <iframe
+                    title="HTML Preview"
+                    srcDoc={content}
+                    style={{ width: '100%', height: '100%', border: 'none', background: '#ffffff', borderRadius: '6px' }}
+                  />
+                ) : (
+                  <div style={{ maxWidth: '720px', margin: '0 auto' }}>
+                    <div style={{
+                      fontSize: '0.68rem',
+                      fontWeight: 600,
+                      color: 'var(--text-muted)',
+                      textTransform: 'uppercase',
+                      marginBottom: '14px',
+                      paddingBottom: '8px',
+                      borderBottom: '1px solid var(--border-subtle)',
+                      letterSpacing: '0.05em'
+                    }}>
+                      {isWord ? 'Word Document Live Page Preview' : 'Rendered Document Preview'}
+                    </div>
+                    {renderFormattedPreview()}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         )}
 
-        {/* Main Editor Body Workspace */}
-        <div style={{ flex: 1, display: 'flex', background: '#090d16', overflow: 'hidden', position: 'relative' }}>
-          {loading ? (
-            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-              Loading document data...
-            </div>
-          ) : isPdf ? (
-            /* PDF Interactive Viewport */
-            <div
-              onClick={addPdfAnnotation}
-              style={{
-                flex: 1,
-                padding: '32px',
-                overflow: 'auto',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                background: '#121827',
-                cursor: activeAnnotationType !== 'none' ? 'crosshair' : 'default'
-              }}
-            >
-              <div
-                style={{
-                  position: 'relative',
-                  width: `${(620 * pdfZoom) / 100}px`,
-                  minHeight: `${(840 * pdfZoom) / 100}px`,
-                  background: '#ffffff',
-                  boxShadow: '0 20px 50px rgba(0,0,0,0.6)',
-                  borderRadius: '6px',
-                  padding: '40px',
-                  color: '#0f172a',
-                  transform: `rotate(${pdfRotation}deg)`,
-                  transition: 'transform 0.3s ease, width 0.2s ease',
-                  userSelect: 'none'
-                }}
-              >
-                {/* Simulated PDF Header */}
-                <div style={{ borderBottom: '2px solid #e2e8f0', paddingBottom: '16px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ fontSize: '1.2rem', fontWeight: '800', color: '#1e293b' }}>{file.name}</div>
-                  <span style={{ fontSize: '0.75rem', background: '#e2e8f0', padding: '2px 8px', borderRadius: '4px', color: '#475569' }}>Page {pdfPage}</span>
-                </div>
-
-                {/* PDF Content Mock/Text */}
-                <div style={{ fontSize: '0.9rem', lineHeight: '1.8', color: '#334155' }}>
-                  <h2 style={{ fontSize: '1.1rem', color: '#0f172a', marginBottom: '12px' }}>Document Content Section {pdfPage}</h2>
-                  <p>This document contains secure vault records for {file.name}. You can add interactive text callouts, highlight bands, and official status stamps anywhere on this page.</p>
-                  <div style={{ margin: '20px 0', padding: '16px', background: '#f8fafc', borderRadius: '8px', borderLeft: '4px solid #6366f1' }}>
-                    <strong>Vault Verification Signature:</strong><br />
-                    Sha256 Hash verified for user account security.
-                  </div>
-                </div>
-
-                {/* PDF Annotations Overlay */}
-                {pdfAnnotations.filter(a => a.page === pdfPage).map(a => (
-                  <div
-                    key={a.id}
-                    style={{
-                      position: 'absolute',
-                      left: a.x + 'px',
-                      top: a.y + 'px',
-                      pointerEvents: 'none'
-                    }}
-                  >
-                    {a.type === 'highlight' && (
-                      <div style={{ background: 'rgba(253, 224, 71, 0.5)', padding: '2px 12px', borderRadius: '4px', border: '1px solid #eab308', fontWeight: 'bold', fontSize: '0.85rem' }}>
-                        {a.text}
-                      </div>
-                    )}
-                    {a.type === 'text' && (
-                      <div style={{ background: '#3b82f6', color: '#fff', padding: '6px 12px', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', fontSize: '0.82rem', fontWeight: '600' }}>
-                        💬 {a.text}
-                      </div>
-                    )}
-                    {a.type === 'stamp' && (
-                      <div style={{ border: '3px double #ef4444', color: '#ef4444', padding: '6px 16px', borderRadius: '6px', fontWeight: '900', fontSize: '1.1rem', letterSpacing: '0.1em', transform: 'rotate(-12deg)', background: 'rgba(255,255,255,0.9)' }}>
-                        {a.text}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            /* Code / HTML / Text Editor Split & Workspace */
-            <div style={{ flex: 1, display: 'flex', width: '100%', height: '100%' }}>
-              {/* Code / Text Input Area */}
-              {(editorMode === 'edit' || editorMode === 'split') && (
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', borderRight: editorMode === 'split' ? '1px solid var(--border-subtle)' : 'none' }}>
-                  <textarea
-                    ref={editorAreaRef}
-                    value={content}
-                    onChange={e => setContent(e.target.value)}
-                    placeholder="Type or edit file content..."
-                    spellCheck={false}
-                    style={{
-                      flex: 1,
-                      width: '100%',
-                      padding: paperMode === 'a4' ? '32px 48px' : '20px',
-                      background: isDocx || isTxtOrMd ? (paperMode === 'a4' ? '#181f30' : '#0d1117') : '#090d16',
-                      color: '#e6edf3',
-                      fontFamily: isDocx || isTxtOrMd ? fontFamily : 'var(--font-mono)',
-                      fontSize: fontSize,
-                      lineHeight: lineHeight,
-                      textAlign: textAlign,
-                      border: 'none',
-                      outline: 'none',
-                      resize: 'none',
-                      boxSizing: 'border-box'
-                    }}
-                  />
-                </div>
-              )}
-
-              {/* Live Render / Split Web Preview Window (for HTML or Live Markdown/Doc view) */}
-              {(editorMode === 'preview' || editorMode === 'split') && (
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', background: '#ffffff' }}>
-                  <div style={{ padding: '6px 12px', background: '#0f172a', color: 'var(--text-muted)', fontSize: '0.72rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border-subtle)' }}>
-                    <span>🌐 Live Renderer</span>
-                    <span>{isHtml ? 'HTML5 Web Engine' : 'Live Document View'}</span>
-                  </div>
-
-                  {isHtml ? (
-                    <iframe
-                      srcDoc={content}
-                      title="Live HTML Preview"
-                      style={{ width: '100%', height: '100%', border: 'none', background: '#ffffff' }}
-                    />
-                  ) : (
-                    <div style={{ flex: 1, padding: '32px 48px', overflowY: 'auto', color: '#0f172a', fontFamily: fontFamily, lineHeight: lineHeight, textAlign: textAlign }}>
-                      <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>{content}</pre>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Footer Bar */}
-        <div style={{ borderTop: '1px solid var(--border-subtle)', padding: '12px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--bg-surface)', flexWrap: 'wrap', gap: '12px' }}>
-          {/* Document Stats */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', fontSize: '0.76rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-            <span>Words: <strong style={{ color: 'var(--accent-cyan)' }}>{wordsCount}</strong></span>
-            <span>Chars: <strong style={{ color: 'var(--accent-primary)' }}>{charCount}</strong></span>
-            <span>Lines: <strong style={{ color: 'var(--accent-emerald)' }}>{lineCount}</strong></span>
+        {/* ── Footer Bar ── */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '10px 16px',
+          borderTop: '1px solid var(--border-subtle)',
+          background: 'var(--bg-surface)',
+          flexShrink: 0,
+          flexWrap: 'wrap',
+          gap: '12px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+              <input
+                type="radio"
+                name="docSaveMode"
+                checked={saveMode === 'replace'}
+                onChange={() => setSaveMode('replace')}
+              />
+              <span>Replace in Vault</span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+              <input
+                type="radio"
+                name="docSaveMode"
+                checked={saveMode === 'new'}
+                onChange={() => setSaveMode('new')}
+              />
+              <span>Save as New Version</span>
+            </label>
           </div>
 
-          {/* Save Mode Selector & Action Buttons */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div style={{ display: 'flex', background: 'var(--bg-input)', borderRadius: '10px', border: '1px solid var(--border-subtle)', padding: '3px', gap: '2px' }}>
-              <button
-                onClick={() => setSaveMode('new')}
-                style={{
-                  padding: '6px 14px',
-                  borderRadius: '8px',
-                  border: 'none',
-                  fontSize: '0.78rem',
-                  fontWeight: '700',
-                  cursor: 'pointer',
-                  background: saveMode === 'new' ? 'var(--accent-primary)' : 'transparent',
-                  color: saveMode === 'new' ? '#fff' : 'var(--text-muted)'
-                }}
-              >
-                <Copy size={13} style={{ marginRight: '5px', verticalAlign: 'middle' }} />
-                Save as New
-              </button>
-              <button
-                onClick={() => setSaveMode('replace')}
-                style={{
-                  padding: '6px 14px',
-                  borderRadius: '8px',
-                  border: 'none',
-                  fontSize: '0.78rem',
-                  fontWeight: '700',
-                  cursor: 'pointer',
-                  background: saveMode === 'replace' ? '#ef4444' : 'transparent',
-                  color: saveMode === 'replace' ? '#fff' : 'var(--text-muted)'
-                }}
-              >
-                <Replace size={13} style={{ marginRight: '5px', verticalAlign: 'middle' }} />
-                Replace Original
-              </button>
-            </div>
-
-            <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleSave} disabled={saving} style={{ minWidth: '140px' }}>
-              <Save size={15} />
-              {saving ? 'Saving...' : saveMode === 'replace' ? 'Replace Original' : 'Save as New'}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              className="btn btn-secondary"
+              onClick={handleDownload}
+              style={{ fontSize: '0.8rem', padding: '6px 12px', borderRadius: '6px', gap: '5px' }}
+            >
+              <Download size={13} />
+              <span>Download</span>
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={onClose}
+              disabled={saving}
+              style={{ fontSize: '0.8rem', padding: '6px 12px', borderRadius: '6px' }}
+            >
+              Cancel
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={handleSaveToVault}
+              disabled={saving}
+              style={{ fontSize: '0.8rem', padding: '6px 14px', borderRadius: '6px', gap: '6px' }}
+            >
+              <Save size={13} />
+              <span>{saving ? 'Saving...' : saveMode === 'replace' ? 'Save Changes' : 'Save as New'}</span>
             </button>
           </div>
         </div>

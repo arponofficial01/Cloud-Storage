@@ -1,13 +1,18 @@
 import { createClient } from '@supabase/supabase-js';
 
-const rawUrl = import.meta.env.VITE_SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const rawKey = import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '';
+const DEFAULT_SUPABASE_URL = 'https://nshouyvazixvyvxdbvwc.supabase.co';
+const DEFAULT_SUPABASE_KEY = 'sb_publishable_i6WOKuVsV76wfEa6okBagg_xzEMzBrD';
+
+const rawUrl = import.meta.env.VITE_SUPABASE_URL || import.meta.env.NEXT_PUBLIC_SUPABASE_URL || DEFAULT_SUPABASE_URL;
+const rawKey = import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || DEFAULT_SUPABASE_KEY;
 
 // Detect if a legitimate custom Supabase project is configured
 export const isLiveSupabase = Boolean(
   rawUrl &&
   !rawUrl.includes('hbecbsxdagfcmlrruoxc') &&
+  !rawUrl.includes('tevidnouvazxndgzlvsl') &&
   !rawUrl.includes('example.supabase.co') &&
+  !rawUrl.includes('your-project') &&
   rawKey &&
   (rawKey.startsWith('ey') || rawKey.startsWith('sb_publishable_') || rawKey.length > 20)
 );
@@ -54,5 +59,13 @@ export const supabase = isLiveSupabase
         on: function() { return this; },
         subscribe: (cb) => { if (cb) cb('SUBSCRIBED'); return this; }
       }),
-      removeChannel: () => {}
+      removeChannel: () => {},
+      storage: {
+        from: () => ({
+          upload: async () => ({ data: null, error: { message: 'Local Vault Mode' } }),
+          download: async () => ({ data: null, error: { message: 'Local Vault Mode' } }),
+          createSignedUrl: async () => ({ data: null, error: { message: 'Local Vault Mode' } }),
+          remove: async () => ({ data: null, error: null })
+        })
+      }
     };

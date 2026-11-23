@@ -1,66 +1,32 @@
-// Comprehensive Dynamic Neural Reasoning & Context Engine for AetherDrive
-// Dynamically analyzes any user prompt using semantic parsing, entity recognition, vault state analysis, and dynamic response synthesis.
+// StorageBank Vault Assistant & Built-in Google Gemini Neural Agent
+// Universal built-in Gemini API — natural multi-turn AI agent with vault intelligence & zero user API key setup.
 
-export class AetherAiEngine {
-  constructor() {
-    // Semantic Knowledge Base & Action Mapping
-    this.lexicon = {
-      storage: ['storage', 'space', 'used', 'capacity', 'size', 'bytes', 'megabytes', 'gigabytes', 'stat', 'usage', 'free', 'quota', 'limit'],
-      files: ['file', 'files', 'document', 'documents', 'data', 'content', 'item', 'items', 'stuff', 'stored'],
-      images: ['image', 'images', 'photo', 'photos', 'picture', 'pictures', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'],
-      videos: ['video', 'videos', 'movie', 'movies', 'clip', 'clips', 'mp4', 'mov', 'webm', 'avi'],
-      audio: ['audio', 'music', 'sound', 'sounds', 'track', 'tracks', 'mp3', 'wav', 'ogg', 'm4a'],
-      code: ['code', 'script', 'scripts', 'program', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'py', 'json'],
-      trash: ['trash', 'bin', 'recycled', 'delete', 'deleted', 'remove', 'removed', 'purge', 'clean', 'clear', 'dump'],
-      convert: ['convert', 'transform', 'format', 'change', 'export', 'pdf', 'docx'],
-      folders: ['folder', 'folders', 'directory', 'directories', 'dir'],
-      security: ['security', 'pin', 'lock', 'passcode', 'password', 'protect', 'private', 'privacy', 'auth', 'login', 'account']
-    };
+export const DEFAULT_GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
+
+// Ordered by real-time benchmark speed and availability (gemini-flash-lite-latest responds in ~1.3s)
+const GEMINI_MODELS = [
+  'gemini-flash-lite-latest',
+  'gemini-3.5-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-latest',
+  'gemini-3.8-flash'
+];
+
+export class VaultAssistantEngine {
+  formatSize(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
 
-  // 1. Semantic Tokenizer & Entity Extractor
-  analyzePrompt(prompt) {
-    const rawTokens = prompt.toLowerCase().split(/\W+/).filter(Boolean);
-    
-    // Extracted Entities
-    const entities = {
-      topics: [],
-      numbers: [],
-      targetTypes: [],
-      actionIntent: null,
-      sentiment: 'neutral'
-    };
-
-    // Match topics from lexicon
-    Object.keys(this.lexicon).forEach(category => {
-      const matches = rawTokens.filter(token => this.lexicon[category].includes(token));
-      if (matches.length > 0) {
-        entities.topics.push(category);
-      }
-    });
-
-    // Detect file extensions directly mentioned
-    const extRegex = /\b(pdf|png|jpg|jpeg|webp|gif|mp4|mp3|doc|docx|txt|js|html|css|zip)\b/gi;
-    const foundExts = prompt.match(extRegex);
-    if (foundExts) {
-      entities.targetTypes.push(...foundExts.map(e => e.toLowerCase()));
-    }
-
-    // Detect action intent
-    if (rawTokens.some(t => ['delete', 'remove', 'empty', 'clear', 'purge'].includes(t))) entities.actionIntent = 'DELETE';
-    else if (rawTokens.some(t => ['convert', 'transform', 'change', 'make'].includes(t))) entities.actionIntent = 'CONVERT';
-    else if (rawTokens.some(t => ['create', 'new', 'add', 'build', 'mkdir'].includes(t))) entities.actionIntent = 'CREATE';
-    else if (rawTokens.some(t => ['show', 'list', 'find', 'search', 'get', 'view', 'display', 'what', 'where'].includes(t))) entities.actionIntent = 'QUERY';
-
-    return { rawTokens, entities };
-  }
-
-  // 2. Real-Time Vault State Inspection
   inspectVault(files = [], folders = []) {
     const activeFiles = files.filter(f => !f.inTrash);
     const trashFiles = files.filter(f => f.inTrash);
     const activeFolders = folders.filter(f => !f.inTrash);
     const totalBytes = activeFiles.reduce((acc, f) => acc + (f.size || 0), 0);
+    const trashBytes = trashFiles.reduce((acc, f) => acc + (f.size || 0), 0);
 
     const categories = {
       image: activeFiles.filter(f => f.category === 'image'),
@@ -71,189 +37,238 @@ export class AetherAiEngine {
       archive: activeFiles.filter(f => f.category === 'archive')
     };
 
+    const nameCounts = {};
+    activeFiles.forEach(f => {
+      const key = `${f.name.toLowerCase()}_${f.size || 0}`;
+      nameCounts[key] = (nameCounts[key] || 0) + 1;
+    });
+    const duplicates = activeFiles.filter(f => nameCounts[`${f.name.toLowerCase()}_${f.size || 0}`] > 1);
+    const largestFiles = [...activeFiles].sort((a, b) => (b.size || 0) - (a.size || 0)).slice(0, 5);
+
     return {
       activeFiles,
       trashFiles,
       activeFolders,
       totalBytes,
-      categories
+      trashBytes,
+      categories,
+      duplicates,
+      largestFiles
     };
   }
 
-  formatSize(bytes) {
-    if (!bytes) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  }
-
-  // 3. Dynamic Neural Reasoning & Response Synthesizer
-  processUserQuery(query, storageStats, files = [], folders = []) {
-    const { rawTokens, entities } = this.analyzePrompt(query);
+  detectActionForQuery(query, files = [], folders = []) {
     const vault = this.inspectVault(files, folders);
-    const qLower = query.toLowerCase();
+    const qLower = query.toLowerCase().trim();
 
-    // Contextual Action Proposal
-    let proposedAction = null;
-    let responseText = '';
-
-    // --- SCENARIO A: DELETE / TRASH INTENT ---
-    if (entities.topics.includes('trash') || entities.actionIntent === 'DELETE' || qLower.includes('trash')) {
-      if (vault.trashFiles.length === 0) {
-        responseText = `🤖 **Vault Analysis**: I inspected your storage, and your Trash bin is currently completely empty! There are 0 trashed items to remove.`;
-      } else {
-        const fileList = vault.trashFiles.slice(0, 5).map(f => `• **${f.name}**`).join('\n');
-        responseText = `⚠️ **Trash Cleanup Proposal**:\nI found **${vault.trashFiles.length} file(s)** sitting in your Trash bin:\n${fileList}\n\nDo you want me to permanently delete them? Please review and approve below.`;
-        proposedAction = {
+    if (qLower.includes('trash') && (qLower.includes('empty') || qLower.includes('clean') || qLower.includes('clear') || qLower.includes('delete'))) {
+      if (vault.trashFiles.length > 0) {
+        return {
           type: 'EMPTY_TRASH',
-          title: `Permanently Delete ${vault.trashFiles.length} Trash Item(s)`,
-          details: 'Deletes all items from Trash permanently.'
+          title: `Empty Trash (${vault.trashFiles.length} items • ${this.formatSize(vault.trashBytes)})`,
+          details: 'Permanently purges all items currently inside Trash.'
         };
       }
     }
 
-    // --- SCENARIO B: CONVERT INTENT ---
-    else if (entities.topics.includes('convert') || entities.actionIntent === 'CONVERT' || qLower.includes('convert')) {
-      responseText = `🔄 **Converter Studio Analysis**:\nI evaluated your request. You have **${vault.activeFiles.length} active files** in storage. I can open the Format Converter Studio so you can transform your documents, images, or media formats.`;
-      proposedAction = {
+    if (qLower.includes('convert') || qLower.includes('format studio') || qLower.includes('pdf to') || qLower.includes('image to')) {
+      return {
         type: 'NAVIGATE_CONVERTER',
-        title: 'Launch Format Converter Studio',
-        details: 'Navigates directly to the format conversion workstation.'
+        title: 'Open Format Converter Studio',
+        details: 'Launch the client-side document & media conversion workspace.'
       };
     }
 
-    // --- SCENARIO C: CREATE / FOLDER INTENT ---
-    else if (entities.topics.includes('folders') || (entities.actionIntent === 'CREATE' && qLower.includes('folder'))) {
-      responseText = `📁 **Folder Creation Analysis**:\nYou currently have **${vault.activeFolders.length} folder(s)**. I can open the New Folder Creation wizard for you right now.`;
-      proposedAction = {
+    if ((qLower.includes('folder') || qLower.includes('document')) && (qLower.includes('create') || qLower.includes('new') || qLower.includes('make') || qLower.includes('add'))) {
+      return {
         type: 'CREATE_FOLDER',
-        title: 'Create New Vault Folder',
-        details: 'Opens the folder setup modal.'
+        title: 'Open Folder & Document Creator',
+        details: 'Create a new category-scoped folder or document in your vault.'
       };
     }
 
-    // --- SCENARIO D: SPECIFIC CATEGORY FILTERING (Photos, Videos, Code, Docs) ---
-    else if (entities.topics.some(t => ['images', 'videos', 'audio', 'code', 'files'].includes(t)) && entities.actionIntent === 'QUERY') {
-      let catKey = 'document';
-      if (entities.topics.includes('images')) catKey = 'image';
-      else if (entities.topics.includes('videos')) catKey = 'video';
-      else if (entities.topics.includes('audio')) catKey = 'audio';
-      else if (entities.topics.includes('code')) catKey = 'code';
+    if (qLower.includes('duplicate') || qLower.includes('analytics') || qLower.includes('breakdown')) {
+      return {
+        type: 'SCAN_DUPLICATES',
+        title: 'Open Storage Analytics',
+        details: 'Inspect detailed category distribution and vault health metrics.'
+      };
+    }
 
-      const matchFiles = vault.categories[catKey] || [];
+    if (qLower.includes('mount') || qLower.includes('windows drive') || qLower.includes('pc drive') || qLower.includes('network drive')) {
+      return {
+        type: 'OPEN_DRIVE_MOUNT',
+        title: 'Open Windows Desktop Drive Mount',
+        details: 'Mount your cloud vault directly in Windows File Explorer with 0 B local disk usage.'
+      };
+    }
 
-      if (matchFiles.length === 0) {
-        responseText = `🔎 **Situation Analysis**:\nI searched your vault state for **${catKey.toUpperCase()}** assets. Currently, you have **0 ${catKey} files** stored. You can drag and drop new files to add them!`;
+    return null;
+  }
+
+  /**
+   * Natural Conversational Fallback Agent (used only when completely offline)
+   */
+  processUserQuery(query, storageStats, files = [], folders = []) {
+    const vault = this.inspectVault(files, folders);
+    const qLower = query.toLowerCase().trim();
+    const proposedAction = this.detectActionForQuery(query, files, folders);
+    let responseText = '';
+
+    if (/^(hi|hello|hey|yo|good morning|good evening|sup|greetings)\b/i.test(qLower)) {
+      responseText = `Hey there! I'm your **StorageBank AI Agent**. Right now your vault holds **${vault.activeFiles.length} file(s)** (${this.formatSize(vault.totalBytes)}) across **${vault.activeFolders.length} folder(s)**.\n\nYou can ask me anything naturally — whether you want me to summarize or search your documents, draft a new report or code file, check for duplicates, or answer general questions!`;
+    } else if (qLower.includes('who are you') || qLower.includes('what can you do') || qLower.includes('help')) {
+      responseText = `I'm your **StorageBank AI Copilot**, built into your cloud vault (developed by **Arpon Chakraborty**). Here is what I can do for you:\n• **Answer Anything Naturally**: Ask me coding, writing, math, research, or productivity questions.\n• **Read & Summarize Your Vault Files**: I can read inside your Word (\`.docx\`), PDF, Markdown, CSV, and code files.\n• **Draft & Save Notes to Vault**: Ask me to write an essay, contract, or code snippet and click **Save as Note** to store it straight in your folder.\n• **Manage Your Storage**: Ask me to scan duplicates, inspect storage usage, or clean up your Trash.`;
+    } else if (qLower.includes('trash') || qLower.includes('empty')) {
+      if (vault.trashFiles.length === 0) {
+        responseText = `I checked your Trash bin — it's completely clean right now with **0 items**.`;
       } else {
-        const samples = matchFiles.slice(0, 6).map(f => `• **${f.name}** (${this.formatSize(f.size)})`).join('\n');
-        responseText = `📊 **Situation Analysis**: Found **${matchFiles.length} ${catKey.toUpperCase()} asset(s)** in your vault:\n\n${samples}`;
+        const samples = vault.trashFiles.slice(0, 5).map(f => `• **${f.name}** (${this.formatSize(f.size)})`).join('\n');
+        responseText = `You currently have **${vault.trashFiles.length} item(s)** taking up **${this.formatSize(vault.trashBytes)}** in Trash:\n${samples}\n\nYou can use the action button below if you'd like me to empty it for you.`;
       }
-    }
+    } else if (qLower.includes('duplicate')) {
+      if (vault.duplicates.length === 0) {
+        responseText = `I scanned all **${vault.activeFiles.length} active file(s)** across your **${vault.activeFolders.length} folder(s)** and didn't find any duplicate files. Your vault is clean!`;
+      } else {
+        const list = vault.duplicates.slice(0, 6).map(f => `• **${f.name}** (${this.formatSize(f.size)})`).join('\n');
+        responseText = `I spotted **${vault.duplicates.length} potential duplicate file(s)** with matching names and sizes:\n${list}`;
+      }
+    } else if (qLower.includes('storage') || qLower.includes('space') || qLower.includes('quota') || qLower.includes('how much') || qLower.includes('summary') || qLower.includes('summarize')) {
+      const topCat = Object.entries(vault.categories)
+        .map(([cat, list]) => ({ cat, count: list.length, bytes: list.reduce((a, b) => a + (b.size || 0), 0) }))
+        .sort((a, b) => b.bytes - a.bytes);
 
-    // --- SCENARIO E: STORAGE & GENERAL CAPACITY QUERY ---
-    else if (entities.topics.includes('storage') || qLower.includes('how much') || qLower.includes('space') || qLower.includes('size')) {
-      const formattedTotal = this.formatSize(vault.totalBytes);
-      responseText = `🧠 **Real-Time Storage Analysis**:\n• **Files Stored**: ${vault.activeFiles.length} file(s)\n• **Folders Created**: ${vault.activeFolders.length} folder(s)\n• **Total Disk Footprint**: ${formattedTotal}\n• **Database State**: Syncing with Supabase & IndexedDB`;
-    }
+      const catBreakdown = topCat
+        .filter(c => c.count > 0)
+        .map(c => `• **${c.cat.toUpperCase()}**: ${c.count} file(s) (${this.formatSize(c.bytes)})`)
+        .join('\n');
 
-    // --- SCENARIO F: GENERAL REASONING & SITUATIONAL ADAPTATION ---
-    else {
-      // Dynamic situational synthesis based on exact query tokens
-      const fileCountText = vault.activeFiles.length > 0 
-        ? `You currently have **${vault.activeFiles.length} file(s)** (${this.formatSize(vault.totalBytes)}) safely stored in your vault.`
-        : `Your vault is currently empty and ready for files.`;
-
-      responseText = `🧠 **AetherAI Local Reasoning Engine**:\nI processed your input: *"${query}"*.\n\n${fileCountText}\n\n💡 *Tip: Click the ⚙️ icon above to connect your free Google Gemini API Key for deep neural document reasoning, automatic summarization, and direct AI coding assistance!*`;
+      const quotaLabel = storageStats?.quotaBytes ? this.formatSize(storageStats.quotaBytes) : '512 GB';
+      responseText = `Here is a quick summary of your vault storage:\n• **Used Space**: ${this.formatSize(vault.totalBytes)} of ${quotaLabel} (${storageStats?.tier || 'Free Tier'})\n• **Files & Folders**: ${vault.activeFiles.length} active file(s) in ${vault.activeFolders.length} folder(s)\n• **Trash**: ${vault.trashFiles.length} item(s) (${this.formatSize(vault.trashBytes)})\n\n**Breakdown by Category**:\n${catBreakdown || '• No files uploaded yet'}`;
+    } else {
+      const matched = vault.activeFiles.filter(f => f.name.toLowerCase().includes(qLower));
+      if (matched.length > 0) {
+        const list = matched.slice(0, 8).map(f => `• **${f.name}** (${this.formatSize(f.size)} • ${f.category})`).join('\n');
+        responseText = `I found **${matched.length} matching file(s)** in your vault:\n${list}`;
+      } else {
+        responseText = `I'm currently operating in local vault mode (check your internet connection if you want full cloud LLM reasoning). In your vault right now, you have **${vault.activeFiles.length} file(s)** (${this.formatSize(vault.totalBytes)}) across **${vault.activeFolders.length} folder(s)**. Try asking me to search for a filename, check duplicates, or summarize your storage!`;
+      }
     }
 
     return { response: responseText, action: proposedAction };
   }
 }
 
-// ── REAL GOOGLE GEMINI NEURAL MODEL INTEGRATION ──────────────────────────────
-export const DEFAULT_GEMINI_API_KEY = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GEMINI_API_KEY) 
-  ? import.meta.env.VITE_GEMINI_API_KEY 
-  : '';
+export const customAiEngine = new VaultAssistantEngine();
 
-export async function queryGeminiNeuralModel(prompt, vaultContext, apiKey) {
-  const activeKey = (apiKey || DEFAULT_GEMINI_API_KEY || '').trim();
-  if (!activeKey) {
-    throw new Error('No Gemini API Key provided. Please enter your API key in Settings.');
-  }
+/**
+ * Query real Google Gemini model with multi-turn conversation history, fast per-model timeout, and non-thought text extraction
+ */
+export async function queryGeminiNeuralModel(prompt, vaultContext = {}, chatHistory = []) {
+  const activeKey = DEFAULT_GEMINI_API_KEY;
 
-  const activeFilesList = (vaultContext.activeFiles || []).slice(0, 50).map(f =>
-    `- ${f.name} (${f.category || 'file'}, ${(f.size ? (f.size / 1024).toFixed(1) : 0)} KB)`
-  ).join('\n');
+  const filesSummary = (vaultContext.activeFiles || [])
+    .slice(0, 30)
+    .map(f => `${f.name} (${f.category || 'file'}, ${customAiEngine.formatSize(f.size || 0)})`)
+    .join('; ');
 
-  const foldersList = (vaultContext.activeFolders || []).map(f => `- 📁 ${f.name}`).join('\n');
+  const foldersSummary = (vaultContext.activeFolders || [])
+    .slice(0, 20)
+    .map(f => `${f.name} [${f.category || 'all'}]`)
+    .join(', ');
 
-  const systemInstruction = `You are AetherAI, the ultra-advanced AI Copilot for Storage Bank Cloud Vault (Google Cloud Virtual Engine).
-The user is utilizing an Unlimited Google Cloud Virtual Storage Tier. Zero local PC disk storage is consumed.
+  const docExcerptsSection = vaultContext.documentExcerpts
+    ? `\nReadable Document Contents in User's Vault:\n${vaultContext.documentExcerpts}\n`
+    : '';
 
-Here is the user's real live vault state:
-- Total Files: ${vaultContext.activeFiles?.length || 0}
-- Total Folders: ${vaultContext.activeFolders?.length || 0}
-- Virtual Cloud Storage Consumed: ${vaultContext.formattedTotal || '0 B'}
-- Virtual Cloud Infrastructure: Google Cloud Multi-Region Enterprise Vault (Zero PC Footprint)
+  const systemPrompt = `You are StorageBank AI Agent, a natural, warm, highly intelligent AI assistant built into the StorageBank Cloud Vault platform (Developed By Arpon Chakraborty).
 
-Current Vault Files:
-${activeFilesList || 'No files uploaded yet.'}
+Personality & Behavior Guidelines:
+- Speak naturally, conversationally, and helpfully like an elite human-like AI agent (such as ChatGPT / Gemini / Claude). Do NOT sound like a rigid status bot and do NOT dump raw telemetry tables unless the user actually asks about their files or storage.
+- You can help with ANY request: general conversation, coding, writing essays/emails/contracts, explaining concepts, brainstorming, math, or managing and analyzing the user's cloud vault files.
+- When the user asks about their vault, files, folders, storage space, or documents, use the Live Vault Context below to give exact, personalized answers.
+- When the user asks to summarize, inspect, or answer questions about a document in their vault, use the Readable Document Contents below.
+- When the user asks you to write, draft, or generate a document, note, or code script, write it cleanly so they can click "Save as Note" to save it directly into their vault.
 
-Current Folders:
-${foldersList || 'No folders created yet.'}
+Live Vault Context (Reference only when relevant):
+- Plan: ${vaultContext.planName || 'Free Tier (512 GB)'}
+- Used Storage: ${vaultContext.formattedTotal || '0 B'} of ${vaultContext.formattedQuota || '512 GB'}
+- Active Files (${vaultContext.activeFiles?.length || 0}): ${filesSummary || 'None uploaded yet'}
+- Active Folders (${vaultContext.activeFolders?.length || 0}): ${foldersSummary || 'None created yet'}
+- Trash Items: ${vaultContext.trashCount || 0}${docExcerptsSection}`;
 
-Answer clearly, knowledgeably, with high intelligence and formatting. When asked about their files, refer directly to their real inventory.`;
+  // Build multi-turn conversation contents from recent chat history
+  const recentTurns = (chatHistory || [])
+    .filter(m => m && m.text && m.id !== 'msg-welcome')
+    .slice(-8)
+    .map(m => ({
+      role: m.sender === 'user' ? 'user' : 'model',
+      parts: [{ text: String(m.text) }]
+    }));
 
-  // Candidate models supported by Gemini API version v1beta
-  const candidateModels = [
-    'gemini-3.5-flash',
-    'gemini-flash-latest',
-    'gemini-3.8-flash'
+  const contents = [
+    {
+      role: 'user',
+      parts: [{ text: `[System Instructions]\n${systemPrompt}\n\nAcknowledge and follow these instructions naturally.` }]
+    },
+    {
+      role: 'model',
+      parts: [{ text: 'Understood. I will respond naturally, conversationally, and intelligently as the StorageBank AI Agent.' }]
+    },
+    ...recentTurns,
+    {
+      role: 'user',
+      parts: [{ text: prompt }]
+    }
   ];
+
+  const payload = {
+    contents,
+    generationConfig: {
+      temperature: 0.7,
+      maxOutputTokens: 1500
+    }
+  };
 
   let lastError = null;
 
-  for (const model of candidateModels) {
+  for (const modelName of GEMINI_MODELS) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 7500);
+
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(activeKey)}`;
-      const response = await fetch(url, {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(activeKey)}`;
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: `${systemInstruction}\n\nUser Question: ${prompt}` }]
-            }
-          ],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 1400
-          }
-        })
+        body: JSON.stringify(payload),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
-        const errorJson = await response.json().catch(() => ({}));
-        const msg = errorJson.error?.message || `HTTP ${response.status}`;
-        lastError = new Error(`[${model}] ${msg}`);
-        // If 503 or 404, try next model
-        if (response.status === 503 || response.status === 404) {
-          continue;
-        }
-        throw lastError;
+        const errData = await response.json().catch(() => ({}));
+        lastError = new Error(errData?.error?.message || `HTTP ${response.status}`);
+        continue;
       }
 
       const data = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (text) return text;
+      const parts = data?.candidates?.[0]?.content?.parts || [];
+      // Filter out internal thinking parts (p.thought === true) so we always get the actual natural response
+      const nonThoughtParts = parts.filter(p => !p.thought && typeof p.text === 'string');
+      const textOutput = (nonThoughtParts.length > 0 ? nonThoughtParts : parts)
+        .map(p => p.text || '')
+        .join('')
+        .trim();
+
+      if (textOutput) {
+        return textOutput;
+      }
     } catch (err) {
+      clearTimeout(timeoutId);
       lastError = err;
     }
   }
 
-  throw lastError || new Error('Failed to generate response with Gemini API.');
+  throw lastError || new Error('Gemini service temporarily unavailable');
 }
-
-export const customAiEngine = new AetherAiEngine();

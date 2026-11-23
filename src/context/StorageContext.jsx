@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import { useAuth } from './AuthContext';
+import { getPlanQuota } from '../utils/planQuotas';
+import { inspectFileSecurity, computeFileSha256, recordSecurityEvent } from '../utils/securityEngine';
 import {
   initDB,
   getAllFiles,
@@ -9,7 +11,8 @@ import {
   saveFolder as dbSaveFolder,
   deleteFolder as dbDeleteFolder,
   logActivityDB,
-  getActivityLogsDB
+  getActivityLogsDB,
+  inferMimeType
 } from '../services/dbService';
 
 import {
@@ -21,9 +24,16 @@ import {
   fetchFilesFromSupabase,
   fetchFoldersFromSupabase,
   fetchActivityLogsFromSupabase,
-  subscribeToSupabaseRealtime
+  subscribeToSupabaseRealtime,
+  uploadFileBlobToSupabase,
+  downloadFileBlobFromSupabase
 } from '../services/supabaseService';
-import coookPardon from '../assets/music/Lvbel-C5-COOOK-PARDON-63.mp3';
+
+import {
+  isTelegramCloudEnabled,
+  uploadFileToTelegram,
+  downloadTelegramFileBlob
+} from '../services/telegramStorageService';
 
 const StorageContext = createContext(null);
 
@@ -77,25 +87,26 @@ export function StorageProvider({ children }) {
 
   const [isDriveModalOpen, setIsDriveModalOpen] = useState(false);
 
-  // Instant drive registration — no file picker, BAT script does everything on Windows side
+  // Instant drive registration & live quota sync
   const registerDrive = (driveName, driveLetter) => {
     const driveRecord = {
-      id: `drive-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      id: `drive-${driveLetter.replace(':', '')}`,
       name: driveName,
       driveLetter,
-      syncedFilesCount: 0,
-      syncedBytes: 0,
+      syncedFilesCount: files.filter(f => !f.inTrash).length,
+      syncedBytes: files.filter(f => !f.inTrash).reduce((a, b) => a + (b.size || 0), 0),
       mountedAt: new Date().toLocaleString(),
-      status: 'Pending BAT Setup',
+      status: 'Connected Cloud Drive',
       unlimited: true
     };
     setMountedDrives(prev => {
-      const next = [driveRecord, ...prev];
-      localStorage.setItem('storagebank_mounted_drives', JSON.stringify(next));
+      const next = [driveRecord, ...prev.filter(d => d.driveLetter !== driveLetter)];
+      try {
+        localStorage.setItem('storagebank_mounted_drives', JSON.stringify(next));
+      } catch {}
       return next;
     });
-    addToast(`Drive "${driveName}" (${driveLetter}) registered! Run the downloaded .BAT as Admin.`, 'success');
-    logActivity('SYSTEM', `Registered Windows Drive "${driveName}" (${driveLetter})`, 'success');
+    logActivity('SYSTEM', `Mounted Windows Cloud Drive "${driveName}" (${driveLetter})`, 'success');
     return driveRecord;
   };
 
@@ -265,18 +276,31 @@ export function StorageProvider({ children }) {
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isActivityLogOpen, setIsActivityLogOpen] = useState(false);
   const [isSubscriptionOpen, setIsSubscriptionOpen] = useState(false);
-  const [isMusicStudioOpen, setIsMusicStudioOpen] = useState(false);
   const [activeAudioTrack, setActiveAudioTrack] = useState(null);
   const [moveModalTarget, setMoveModalTarget] = useState(null);
+  const [confirmDialog, setConfirmDialog] = useState(null);
+
+  const requestConfirm = (options) => {
+    setConfirmDialog({
+      title: options.title || 'Confirm Action',
+      message: options.message || 'Are you sure you want to continue?',
+      confirmText: options.confirmText || 'Confirm',
+      cancelText: options.cancelText || 'Cancel',
+      danger: options.danger !== false,
+      onConfirm: options.onConfirm
+    });
+  };
+
+  const closeConfirmDialog = () => setConfirmDialog(null);
 
   // Site-Wide Background Music State
   const [currentMusicTrack, setCurrentMusicTrack] = useState(() => {
     const saved = localStorage.getItem('storagebank_music_track');
-    return saved ? JSON.parse(saved) : { id: '2', title: 'COOOK PARDON', artist: 'Lvbel C5 (Cook Beat)', url: coookPardon, genre: 'Phonk Beat' };
+    return saved ? JSON.parse(saved) : null;
   });
   const [isMusicPlaying, setIsMusicPlayingRaw] = useState(() => {
     const saved = localStorage.getItem('storagebank_music_playing');
-    return saved === null ? true : saved === 'true';
+    return saved === 'true';
   });
 
   const setIsMusicPlaying = (valOrFn) => {
@@ -350,6 +374,45 @@ export function StorageProvider({ children }) {
       setFolders(localFolders);
       setActivityLogs(localLogs);
       setLoading(false);
+
+      // Heal & sync any files:
+      // 1) If a file has a blob but no telegramFileId, back it up to Telegram Cloud
+      // 2) If a file lost its local blob in an earlier session but has telegramFileId/parts, restore and persist its properly typed Blob immediately so it opens in 0ms
+      if (isTelegramCloudEnabled()) {
+        localFiles.forEach(async (lf) => {
+          if (lf.blob instanceof Blob && !lf.telegramFileId) {
+            try {
+              const tgRes = await uploadFileToTelegram(lf.name, lf.blob);
+              if (tgRes && tgRes.fileId) {
+                const updated = {
+                  ...lf,
+                  type: inferMimeType(lf.name, lf.type),
+                  storageProvider: 'telegram',
+                  telegramFileId: tgRes.fileId,
+                  telegramMessageId: tgRes.messageId,
+                  parts: tgRes.parts || null,
+                  isChunked: tgRes.isChunked || false
+                };
+                await dbSaveFile(updated);
+                setFiles(prev => prev.map(f => f.id === lf.id ? updated : f));
+              }
+            } catch {}
+          } else if (!(lf.blob instanceof Blob) && (lf.telegramFileId || (lf.parts && lf.parts.length > 0))) {
+            try {
+              const restoredBlob = await downloadTelegramFileBlob(lf);
+              if (restoredBlob instanceof Blob) {
+                const healed = {
+                  ...lf,
+                  type: inferMimeType(lf.name, lf.type),
+                  blob: restoredBlob
+                };
+                await dbSaveFile(healed);
+                setFiles(prev => prev.map(f => f.id === lf.id ? healed : f));
+              }
+            } catch {}
+          }
+        });
+      }
 
       // 2. Background Cloud Sync from Supabase
       const [remoteFiles, remoteFolders, remoteLogs] = await Promise.all([
@@ -425,6 +488,99 @@ export function StorageProvider({ children }) {
     };
   }, [user?.id]);
 
+  // Live Bi-Directional Sync with Windows WebDAV Zero-Disk Cloud Drive Bridge (http://127.0.0.1:8080)
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+
+    const pushAndPullBridge = async () => {
+      try {
+        const planObj = getPlanQuota(user?.plan);
+        const activeF = files.filter(f => !f.inTrash);
+        const activeFold = folders.filter(f => !f.inTrash);
+        const totalB = activeF.reduce((acc, f) => acc + (f.size || 0), 0);
+
+        await fetch('http://127.0.0.1:8080/api/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            files: activeF.map(f => ({
+              id: f.id,
+              name: f.name,
+              size: f.size || 0,
+              type: f.type || 'application/octet-stream',
+              category: f.category || 'document',
+              folderId: f.folderId || null,
+              telegramFileId: f.telegramFileId || null,
+              createdAt: f.createdAt,
+              updatedAt: f.updatedAt
+            })),
+            folders: activeFold.map(fd => ({
+              id: fd.id,
+              name: fd.name,
+              parentId: fd.parentId || null,
+              category: fd.category || 'all',
+              createdAt: fd.createdAt,
+              updatedAt: fd.updatedAt
+            })),
+            quotaBytes: planObj.quotaBytes,
+            usedBytes: totalB,
+            planName: planObj.displayName
+          })
+        });
+
+        const statusRes = await fetch('http://127.0.0.1:8080/api/status');
+        if (!statusRes.ok || cancelled) return;
+        const statusData = await statusRes.json();
+
+        if (Array.isArray(statusData.explorerEvents) && statusData.explorerEvents.length > 0) {
+          for (const evt of statusData.explorerEvents) {
+            if (evt.type === 'UPSERT_FILE' && evt.file) {
+              let blob = null;
+              if (evt.file.base64Content) {
+                try {
+                  const byteChars = atob(evt.file.base64Content);
+                  const byteArr = new Uint8Array(byteChars.length);
+                  for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i);
+                  blob = new Blob([byteArr], { type: evt.file.type || 'application/octet-stream' });
+                } catch {}
+              }
+              const cat = getCategoryFromMime(evt.file.type || '', evt.file.name || '');
+              const newRec = {
+                ...evt.file,
+                userId: user.id,
+                category: cat,
+                blob
+              };
+              delete newRec.base64Content;
+              await dbSaveFile(newRec);
+              setFiles(prev => [newRec, ...prev.filter(f => f.id !== newRec.id && f.name !== newRec.name)]);
+            } else if (evt.type === 'CREATE_FOLDER' && evt.folder) {
+              const newFold = { ...evt.folder, userId: user.id };
+              await dbSaveFolder(newFold);
+              setFolders(prev => [newFold, ...prev.filter(f => f.id !== newFold.id)]);
+            } else if (evt.type === 'DELETE_FILE' && evt.id) {
+              await dbDeleteFile(evt.id);
+              setFiles(prev => prev.filter(f => f.id !== evt.id));
+            } else if (evt.type === 'DELETE_FOLDER' && evt.id) {
+              await dbDeleteFolder(evt.id);
+              setFolders(prev => prev.filter(f => f.id !== evt.id));
+            }
+          }
+        }
+      } catch {
+        // Local bridge daemon not active yet — ignore silently
+      }
+    };
+
+    pushAndPullBridge();
+    const interval = setInterval(pushAndPullBridge, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [user, files, folders]);
+
   // Log User Activity to IndexedDB & Supabase
   const logActivity = async (action, details, status = 'success') => {
     if (!user) return;
@@ -439,6 +595,16 @@ export function StorageProvider({ children }) {
     await logActivityDB(entry);
     await syncActivityLogToSupabase(entry);
     setActivityLogs(prev => [entry, ...prev]);
+  };
+
+  const clearActivityLogs = async () => {
+    setActivityLogs([]);
+    try {
+      localStorage.removeItem('storagebank_activity_logs');
+    } catch {
+      // ignore
+    }
+    addToast('Activity logs cleared.', 'info');
   };
 
   // File Upload Handler — Zero-RAM Blob Streaming + Batch Non-Blocking Upload Engine
@@ -467,7 +633,7 @@ export function StorageProvider({ children }) {
       percentage: 0
     });
 
-    const BATCH_SIZE = 15; // Process in non-blocking batches of 15
+    const BATCH_SIZE = 25; // Process in non-blocking batches of 25 for fast bulk streaming
 
     for (let i = 0; i < totalFiles; i += BATCH_SIZE) {
       const chunk = newFiles.slice(i, i + BATCH_SIZE);
@@ -487,7 +653,13 @@ export function StorageProvider({ children }) {
           extractedBlob = new Blob([f.content], { type: f.type || 'text/plain' });
         }
 
-        const fileName = f.name || 'Untitled_File';
+        const rawFileName = f.name || 'Untitled_File';
+        const secCheck = inspectFileSecurity(rawFileName, f.size || extractedBlob?.size || 0);
+        const fileName = secCheck.sanitizedName;
+        if (secCheck.isDoubleExtensionSpoof) {
+          recordSecurityEvent('Blocked Spoofed Extension', `Neutralized double-extension pattern on "${rawFileName}"`, 'warning');
+        }
+        const sha256 = extractedBlob ? await computeFileSha256(extractedBlob) : null;
         const fileType = f.type || extractedBlob?.type || 'application/octet-stream';
         const fileSize = f.size || extractedBlob?.size || 0;
         const category = f.category || getCategoryFromMime(fileType, fileName);
@@ -502,6 +674,8 @@ export function StorageProvider({ children }) {
           type: fileType,
           category,
           size: fileSize,
+          sha256,
+          securityStatus: secCheck.riskLevel,
           blob: extractedBlob,
           starred: !!f.starred,
           inTrash: !!f.inTrash,
@@ -540,8 +714,33 @@ export function StorageProvider({ children }) {
       await new Promise(r => setTimeout(r, 0));
     }
 
-    // Supabase sync in background queue
-    addedRecords.forEach(r => syncFileToSupabase(r));
+    // Background cloud sync: Telegram Cloud (100% Free CDN) if configured, else Supabase
+    addedRecords.forEach(async (r) => {
+      try {
+        if (r.blob && isTelegramCloudEnabled()) {
+          const tgResult = await uploadFileToTelegram(r.name, r.blob);
+          if (tgResult && tgResult.fileId) {
+            r.storageProvider = 'telegram';
+            r.telegramFileId = tgResult.fileId;
+            r.telegramMessageId = tgResult.messageId;
+            r.parts = tgResult.parts || null;
+            r.isChunked = tgResult.isChunked || false;
+            await dbSaveFile(r);
+            setFiles(prev => prev.map(f => f.id === r.id ? { ...f, ...r } : f));
+          }
+        } else if (r.blob) {
+          const storagePath = await uploadFileBlobToSupabase(user.id, r.id, r.name, r.blob);
+          if (storagePath) {
+            r.storagePath = storagePath;
+            await dbSaveFile(r);
+            setFiles(prev => prev.map(f => f.id === r.id ? { ...f, ...r } : f));
+          }
+          await syncFileToSupabase(r);
+        }
+      } catch (err) {
+        console.warn('Background cloud sync warning:', err);
+      }
+    });
 
     addToast(`Stored ${addedRecords.length} file(s) in Storage Bank!`, 'success');
     logActivity('UPLOAD', `Uploaded ${addedRecords.length} file(s)`, 'success');
@@ -554,23 +753,100 @@ export function StorageProvider({ children }) {
 
   const getCategoryFromMime = (mime, name) => {
     const ext = name.split('.').pop()?.toLowerCase() || '';
-    if (mime.startsWith('image/') || ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return 'image';
-    if (mime.startsWith('video/') || ['mp4', 'webm', 'mkv', 'mov', 'avi'].includes(ext)) return 'video';
-    if (mime.startsWith('audio/') || ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a'].includes(ext)) return 'audio';
-    if (['pdf', 'doc', 'docx', 'txt', 'rtf', 'odt', 'csv', 'xlsx', 'pptx'].includes(ext)) return 'document';
-    if (['js', 'jsx', 'ts', 'tsx', 'html', 'css', 'json', 'py', 'java', 'cpp', 'c', 'php', 'sql', 'sh', 'md'].includes(ext)) return 'code';
+    if (mime.startsWith('image/') || ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'avif', 'heic'].includes(ext)) return 'image';
+    if (mime.startsWith('video/') || ['mp4', 'webm', 'mkv', 'mov', 'avi', 'm4v', 'flv', 'wmv'].includes(ext)) return 'video';
+    if (mime.startsWith('audio/') || ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a', 'wma', 'opus'].includes(ext)) return 'audio';
+    if (['pdf', 'doc', 'docx', 'txt', 'rtf', 'odt', 'csv', 'tsv', 'xlsx', 'xls', 'pptx', 'ppt', 'md', 'markdown'].includes(ext)) return 'document';
+    if (['js', 'jsx', 'ts', 'tsx', 'html', 'htm', 'css', 'scss', 'json', 'py', 'java', 'cpp', 'c', 'h', 'cs', 'go', 'rs', 'php', 'sql', 'sh', 'yaml', 'yml', 'xml', 'toml', 'ini', 'env'].includes(ext)) return 'code';
     if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2'].includes(ext)) return 'archive';
     return 'document';
   };
 
-  // Folder Operations
-  const createFolder = async (name, color = '#6366f1') => {
+  const ensureFileBlob = async (file) => {
+    if (!file) return null;
+    const correctMime = inferMimeType(file.name, file.type);
+    if (file.blob instanceof Blob) {
+      if (!file.blob.type || file.blob.type === 'application/octet-stream') {
+        return new Blob([file.blob], { type: correctMime });
+      }
+      return file.blob;
+    }
+    if (file.storageProvider === 'telegram' || file.telegramFileId || file.parts) {
+      try {
+        const tgBlob = await downloadTelegramFileBlob(file);
+        if (tgBlob) {
+          const typedBlob = new Blob([tgBlob], { type: correctMime });
+          const updated = { ...file, type: correctMime, blob: typedBlob };
+          await dbSaveFile(updated);
+          setFiles(prev => prev.map(f => f.id === file.id ? updated : f));
+          return typedBlob;
+        }
+      } catch (tgErr) {
+        console.warn('Failed to fetch blob from Telegram cloud:', tgErr);
+      }
+    }
+    if (file.storagePath) {
+      try {
+        const downloadedBlob = await downloadFileBlobFromSupabase(file.storagePath);
+        if (downloadedBlob) {
+          const typedBlob = new Blob([downloadedBlob], { type: correctMime });
+          const updated = { ...file, type: correctMime, blob: typedBlob };
+          await dbSaveFile(updated);
+          setFiles(prev => prev.map(f => f.id === file.id ? updated : f));
+          return typedBlob;
+        }
+      } catch (err) {
+        console.warn('Failed to fetch blob from cloud storage:', err);
+      }
+    }
+    return null;
+  };
+
+  /**
+   * Unified download trigger for any file (in-memory, Supabase, or chunked Telegram)
+   */
+  const downloadFile = async (file) => {
+    if (!file) return;
+    try {
+      let blob = file.blob;
+      if (!(blob instanceof Blob)) {
+        addToast(`Preparing "${file.name}" from Cloud Vault...`, 'info');
+        blob = await ensureFileBlob(file);
+      }
+      if (!blob) {
+        addToast(`Could not retrieve "${file.name}" from Cloud Vault.`, 'error');
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      addToast(`Downloaded "${file.name}"`, 'success');
+      logActivity('DOWNLOAD', `Downloaded "${file.name}"`, 'success');
+    } catch (err) {
+      console.error('Download error:', err);
+      addToast(`Download failed: ${err.message}`, 'error');
+    }
+  };
+
+  // Folder Operations — precise category & placement support
+  const createFolder = async (name, color = '#6366f1', options = {}) => {
     if (!user || !name.trim()) return;
     const now = new Date().toISOString();
+    const validCategories = ['all', 'document', 'image', 'video', 'audio', 'code', 'archive'];
+    const defaultCat = validCategories.includes(activeCategory) ? activeCategory : 'all';
+    const targetCategory = options.category || defaultCat;
+    const targetParentId = options.parentId !== undefined ? options.parentId : null;
+
     const folderRecord = {
       id: `fold-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
       userId: user.id,
-      parentId: currentFolderId,
+      parentId: targetParentId,
+      category: targetCategory,
       name: name.trim(),
       color,
       starred: false,
@@ -581,8 +857,9 @@ export function StorageProvider({ children }) {
     setFolders(prev => [folderRecord, ...prev]);
     await dbSaveFolder(folderRecord);
     syncFolderToSupabase(folderRecord);
-    addToast(`Created folder "${name}"`, 'success');
-    logActivity('CREATE_FOLDER', `Created folder "${name}"`, 'success');
+    addToast(`Created folder "${name.trim()}"`, 'success');
+    logActivity('CREATE_FOLDER', `Created folder "${name.trim()}"`, 'success');
+    return folderRecord;
   };
 
   const saveFile = async (fileObj) => {
@@ -596,9 +873,27 @@ export function StorageProvider({ children }) {
     }
     await dbSaveFile(fileObj);
     syncFileToSupabase(fileObj);
+
+    // Background stream to Telegram Cloud so 0 bytes are needed on local disk
+    if (fileObj.blob instanceof Blob && isTelegramCloudEnabled()) {
+      uploadFileToTelegram(fileObj.name, fileObj.blob).then(async (tgResult) => {
+        if (tgResult && tgResult.fileId) {
+          const synced = {
+            ...fileObj,
+            storageProvider: 'telegram',
+            telegramFileId: tgResult.fileId,
+            telegramMessageId: tgResult.messageId,
+            parts: tgResult.parts || null,
+            isChunked: tgResult.isChunked || false
+          };
+          await dbSaveFile(synced);
+          setFiles(prev => prev.map(f => f.id === fileObj.id ? synced : f));
+        }
+      }).catch(() => {});
+    }
   };
 
-  // Replace original — keeps same file ID, overwrites blob + metadata in IDB and Supabase
+  // Replace original — keeps same file ID, streams new blob to Cloud Vault and saves metadata only
   const replaceFile = async (originalId, newBlob, extraMeta = {}) => {
     const now = new Date().toISOString();
     let updated;
@@ -613,6 +908,24 @@ export function StorageProvider({ children }) {
       }
       await dbSaveFile(updated);
       syncFileToSupabase(updated);
+
+      if (newBlob instanceof Blob && isTelegramCloudEnabled()) {
+        const targetRef = updated;
+        uploadFileToTelegram(targetRef.name, newBlob).then(async (tgResult) => {
+          if (tgResult && tgResult.fileId) {
+            const cloudSynced = {
+              ...targetRef,
+              storageProvider: 'telegram',
+              telegramFileId: tgResult.fileId,
+              telegramMessageId: tgResult.messageId,
+              parts: tgResult.parts || null,
+              isChunked: tgResult.isChunked || false
+            };
+            await dbSaveFile(cloudSynced);
+            setFiles(prev => prev.map(f => f.id === originalId ? cloudSynced : f));
+          }
+        }).catch(() => {});
+      }
     }
     return updated;
   };
@@ -719,8 +1032,12 @@ export function StorageProvider({ children }) {
     addToast('Item renamed', 'success');
   };
 
-  const navigateToFolder = (folderId, folderName = 'Folder') => {
-    setActiveCategory('all');
+  const navigateToFolder = (folderId, folderName = 'Folder', targetCategory = null) => {
+    if (targetCategory) {
+      setActiveCategory(targetCategory);
+    } else if (['converter', 'profile'].includes(activeCategory)) {
+      setActiveCategory('all');
+    }
     setSearchQuery('');
     setCurrentFolderId(folderId);
 
@@ -756,8 +1073,9 @@ export function StorageProvider({ children }) {
   const clearSelection = () => setSelectedItems([]);
 
   // SUB-SECOND FAST PARALLEL BATCH OPERATIONS
-  const batchMoveToTrash = async () => {
-    const selected = [...selectedItems];
+  const batchMoveToTrash = async (targetIds = null) => {
+    const selected = Array.isArray(targetIds) && targetIds.length > 0 ? targetIds : [...selectedItems];
+    if (selected.length === 0) return;
     setFolders(prev => prev.map(f => selected.includes(f.id) ? { ...f, inTrash: true } : f));
     setFiles(prev => prev.map(f => selected.includes(f.id) ? { ...f, inTrash: true } : f));
     clearSelection();
@@ -779,8 +1097,9 @@ export function StorageProvider({ children }) {
     addToast(`Moved ${selected.length} item(s) to Trash`, 'info');
   };
 
-  const batchRestoreFromTrash = async () => {
-    const selected = [...selectedItems];
+  const batchRestoreFromTrash = async (targetIds = null) => {
+    const selected = Array.isArray(targetIds) && targetIds.length > 0 ? targetIds : [...selectedItems];
+    if (selected.length === 0) return;
     setFolders(prev => prev.map(f => selected.includes(f.id) ? { ...f, inTrash: false } : f));
     setFiles(prev => prev.map(f => selected.includes(f.id) ? { ...f, inTrash: false } : f));
     clearSelection();
@@ -802,8 +1121,9 @@ export function StorageProvider({ children }) {
     addToast(`Restored ${selected.length} item(s) from Trash`, 'success');
   };
 
-  const batchDeletePermanently = async () => {
-    const selected = [...selectedItems];
+  const batchDeletePermanently = async (targetIds = null) => {
+    const selected = Array.isArray(targetIds) && targetIds.length > 0 ? targetIds : [...selectedItems];
+    if (selected.length === 0) return;
     setFolders(prev => prev.filter(f => !selected.includes(f.id)));
     setFiles(prev => prev.filter(f => !selected.includes(f.id)));
     clearSelection();
@@ -949,37 +1269,75 @@ export function StorageProvider({ children }) {
   const displayedFolders = useMemo(() => {
     const normCurrent = (currentFolderId !== null && currentFolderId !== undefined && currentFolderId !== '') ? String(currentFolderId) : null;
     return folders.filter(folder => {
-      if (activeCategory === 'trash') return folder.inTrash;
+      const normParent = (folder.parentId !== null && folder.parentId !== undefined && folder.parentId !== '' && folder.parentId !== 'null') ? String(folder.parentId) : null;
+
+      if (activeCategory === 'trash') {
+        if (normCurrent) {
+          // Inside a trashed folder: display any child subfolders
+          return normParent === normCurrent;
+        }
+        return Boolean(folder.inTrash);
+      }
+
       if (folder.inTrash) return false;
-      if (activeCategory === 'starred') return folder.starred;
-      if (activeCategory === 'edited') return false; // Show files only in Edited Vault
+      if (activeCategory === 'starred') return Boolean(folder.starred);
+      if (activeCategory === 'edited') return false;
 
       if (searchQuery.trim()) {
-        return folder.name.toLowerCase().includes(searchQuery.toLowerCase());
+        const matchesQuery = folder.name.toLowerCase().includes(searchQuery.toLowerCase());
+        if (!matchesQuery) return false;
+        if (['image', 'document', 'video', 'audio', 'code', 'archive'].includes(activeCategory)) {
+          return folder.category === activeCategory || files.some(f => !f.inTrash && String(f.folderId) === String(folder.id) && f.category === activeCategory);
+        }
+        return true;
       }
-      const normParent = (folder.parentId !== null && folder.parentId !== undefined && folder.parentId !== '' && folder.parentId !== 'null') ? String(folder.parentId) : null;
+
+      // Scoped category views: only show folders created for this category or holding files of this category
+      if (['image', 'document', 'video', 'audio', 'code', 'archive'].includes(activeCategory)) {
+        if (normParent !== normCurrent) return false;
+        if (folder.category && folder.category !== 'all') {
+          return folder.category === activeCategory;
+        }
+        return files.some(f => !f.inTrash && String(f.folderId) === String(folder.id) && f.category === activeCategory);
+      }
+
       return normParent === normCurrent;
     });
-  }, [folders, activeCategory, currentFolderId, searchQuery]);
+  }, [folders, files, activeCategory, currentFolderId, searchQuery]);
 
   const displayedFiles = useMemo(() => {
     const normCurrent = (currentFolderId !== null && currentFolderId !== undefined && currentFolderId !== '') ? String(currentFolderId) : null;
+    const validFolderIds = new Set(folders.filter(f => !f.inTrash).map(f => String(f.id)));
+
     let result = files.filter(file => {
-      if (activeCategory === 'trash') return file.inTrash;
+      const rawFolder = (file.folderId !== null && file.folderId !== undefined && file.folderId !== '' && file.folderId !== 'null') ? String(file.folderId) : null;
+
+      if (activeCategory === 'trash') {
+        if (normCurrent) {
+          // Inside a trashed folder: show all files belonging to this folder so user can preview them
+          return rawFolder === normCurrent;
+        }
+        return Boolean(file.inTrash);
+      }
+
       if (file.inTrash) return false;
-      if (activeCategory === 'starred') return file.starred;
+      if (activeCategory === 'starred') return Boolean(file.starred);
 
       if (activeCategory === 'edited') {
         return file.tags?.includes('edited') || file.name.includes('_edited') || file.category === 'edited';
       }
 
+      // Normalize folder reference (if folder was deleted, treat file as root)
+      const normFolder = rawFolder && validFolderIds.has(rawFolder) ? rawFolder : null;
+
       // Category filters (photos, docs, audio, video, code, archive)
       if (['image', 'document', 'video', 'audio', 'code', 'archive'].includes(activeCategory)) {
-        if (normCurrent) {
-          const normFolder = (file.folderId !== null && file.folderId !== undefined && file.folderId !== '' && file.folderId !== 'null') ? String(file.folderId) : null;
-          return file.category === activeCategory && normFolder === normCurrent;
+        if ( file.category !== activeCategory ) return false;
+        if (searchQuery.trim()) {
+          return file.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            file.tags?.some(t => t.toLowerCase().includes(searchQuery.toLowerCase()));
         }
-        return file.category === activeCategory;
+        return normFolder === normCurrent;
       }
 
       if (searchQuery.trim()) {
@@ -987,7 +1345,6 @@ export function StorageProvider({ children }) {
           file.tags?.some(t => t.toLowerCase().includes(searchQuery.toLowerCase()));
       }
 
-      const normFolder = (file.folderId !== null && file.folderId !== undefined && file.folderId !== '' && file.folderId !== 'null') ? String(file.folderId) : null;
       return normFolder === normCurrent;
     });
 
@@ -1004,7 +1361,7 @@ export function StorageProvider({ children }) {
     });
 
     return result;
-  }, [files, activeCategory, currentFolderId, searchQuery, sortBy, sortOrder]);
+  }, [files, folders, activeCategory, currentFolderId, searchQuery, sortBy, sortOrder]);
 
   const selectAllDisplayedItems = () => {
     const allPageIds = [
@@ -1026,9 +1383,9 @@ export function StorageProvider({ children }) {
     }
   };
 
-  const [diskEstimate, setDiskEstimate] = useState({ usage: 0, quota: 0 });
+  // Storage Quota Engine with dynamic tier tracking
+  const currentPlanObj = useMemo(() => getPlanQuota(user?.plan), [user?.plan]);
 
-  // Google Cloud Virtual Storage Engine (Zero Local PC Disk Consumption)
   const storageStats = useMemo(() => {
     const activeFiles = files.filter(f => !f.inTrash);
     let totalBytes = 0;
@@ -1050,25 +1407,23 @@ export function StorageProvider({ children }) {
       categories[catKey].bytes += sz;
     });
 
-    // 100 TB Google Cloud Virtual Object Allocation
-    const virtualCloudQuota = 100 * 1024 * 1024 * 1024 * 1024;
+    const quotaBytes = currentPlanObj.quotaBytes;
+    const usagePercent = Math.min(100, Math.max(0.01, (totalBytes / quotaBytes) * 100)).toFixed(2);
 
     return {
       totalFiles: activeFiles.length,
       totalBytes,
       categories,
-      tier: 'Google Cloud Enterprise Virtual Tier',
-      isUnlimited: true,
-      localPcUsedBytes: 0,
-      localPcUsageText: '0 B (Zero Local PC Footprint)',
-      cloudEngine: 'Google Cloud Multi-Region Virtual Object Vault',
-      cloudSyncStatus: 'Synchronized • Real-Time Cloud Stream Active',
-      virtualQuotaDisplay: 'Unlimited (Google One Virtual Engine)',
+      plan: currentPlanObj,
+      tier: currentPlanObj.displayName,
+      quotaBytes,
+      quotaGB: currentPlanObj.quotaGB,
+      usagePercent,
       diskUsage: totalBytes,
-      diskQuota: virtualCloudQuota,
-      quotaPercent: Math.max(0.01, ((totalBytes / virtualCloudQuota) * 100)).toFixed(4)
+      diskQuota: quotaBytes,
+      cloudSyncStatus: 'Synchronized • Real-Time Cloud Stream Active'
     };
-  }, [files]);
+  }, [files, currentPlanObj]);
 
   return (
     <StorageContext.Provider value={{
@@ -1098,6 +1453,7 @@ export function StorageProvider({ children }) {
       zipSelectedFiles,
       unzipFile,
       moveItemsToFolder,
+      navigateToFolder,
       moveModalTarget,
       setMoveModalTarget,
       displayedFolders,
@@ -1121,8 +1477,8 @@ export function StorageProvider({ children }) {
       setIsActivityLogOpen,
       isSubscriptionOpen,
       setIsSubscriptionOpen,
-      isMusicStudioOpen,
-      setIsMusicStudioOpen,
+      isTelegramCloudEnabled,
+      downloadFile,
       currentMusicTrack,
       setCurrentMusicTrack,
       isMusicPlaying,
@@ -1155,7 +1511,12 @@ export function StorageProvider({ children }) {
       connectWindowsFolder,
       disconnectWindowsFolder,
       logActivity,
-      reloadVault
+      clearActivityLogs,
+      reloadVault,
+      ensureFileBlob,
+      confirmDialog,
+      requestConfirm,
+      closeConfirmDialog
     }}>
       {children}
     </StorageContext.Provider>
