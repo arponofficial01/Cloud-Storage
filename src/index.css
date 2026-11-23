@@ -432,8 +432,9 @@ body {
   display: inline-flex;
 }
 
-/* Mobile Bottom Bar (hidden on desktop) */
-.mobile-bottom-bar {
+/* Mobile Bottom Bar & Mobile Category Strip (hidden on desktop) */
+.mobile-bottom-bar,
+.mobile-category-strip {
   display: none;
 }
 
@@ -475,7 +476,21 @@ tbody tr:hover {
   }
 
   .mobile-menu-btn {
-    display: inline-flex !important;
+    display: none !important;
+  }
+
+  .mobile-category-strip {
+    display: flex !important;
+    align-items: center;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--border-subtle);
+    scrollbar-width: none;
+  }
+  .mobile-category-strip::-webkit-scrollbar {
+    display: none;
   }
 
   .mobile-bottom-bar {

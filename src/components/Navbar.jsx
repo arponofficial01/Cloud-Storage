@@ -14,11 +14,10 @@ import {
   Activity,
   Sun,
   Moon,
-  Menu,
   HardDrive
 } from 'lucide-react';
 
-export function Navbar({ onOpenAiCopilot, onToggleMobileSidebar, onOpenSubscription }) {
+export function Navbar({ onOpenAiCopilot, onOpenSubscription }) {
   const {
     searchQuery,
     setSearchQuery,
@@ -76,28 +75,8 @@ export function Navbar({ onOpenAiCopilot, onToggleMobileSidebar, onOpenSubscript
         flexShrink: 0
       }}
     >
-      {/* Left section: Mobile Hamburger (Mobile Only) + Search Input */}
+      {/* Left section: Search Input */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, maxWidth: '520px', minWidth: 0 }}>
-        {onToggleMobileSidebar && (
-          <button
-            className="btn btn-ghost btn-icon mobile-menu-btn"
-            onClick={onToggleMobileSidebar}
-            style={{
-              height: '34px',
-              width: '34px',
-              padding: 0,
-              borderRadius: '7px',
-              border: '1px solid var(--border-subtle)',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0
-            }}
-            title="Open Navigation"
-          >
-            <Menu size={16} color="var(--text-secondary)" />
-          </button>
-        )}
-
         <div
           style={{
             position: 'relative',

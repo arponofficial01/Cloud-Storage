@@ -91,17 +91,58 @@ export function Breadcrumbs() {
     });
   };
 
+  const mobileCategories = [
+    { key: 'all', label: 'All Files' },
+    { key: 'document', label: 'Documents' },
+    { key: 'image', label: 'Photos' },
+    { key: 'video', label: 'Videos' },
+    { key: 'audio', label: 'Audio' },
+    { key: 'code', label: 'Code' },
+    { key: 'starred', label: 'Starred' },
+    { key: 'trash', label: 'Trash' },
+    { key: 'converter', label: 'Converter' }
+  ];
+
   return (
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      gap: '12px',
-      marginBottom: '16px',
-      paddingBottom: '12px',
-      borderBottom: '1px solid var(--border-subtle)',
-      flexWrap: 'wrap'
-    }}>
+    <>
+      {/* Mobile-Only Horizontal Category Filter Strip (Replaces Hamburger Drawer) */}
+      <div className="mobile-category-strip">
+        {mobileCategories.map(cat => {
+          const active = activeCategory === cat.key;
+          return (
+            <button
+              key={cat.key}
+              type="button"
+              onClick={() => navigateToFolder(null, 'My Vault', cat.key)}
+              style={{
+                padding: '5px 11px',
+                borderRadius: '6px',
+                fontSize: '0.73rem',
+                fontWeight: active ? 600 : 500,
+                background: active ? 'var(--bg-surface-hover)' : 'var(--bg-surface)',
+                border: active ? '1px solid var(--border-strong)' : '1px solid var(--border-subtle)',
+                color: active ? 'var(--text-primary)' : 'var(--text-muted)',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                flexShrink: 0
+              }}
+            >
+              {cat.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '12px',
+        marginBottom: '16px',
+        paddingBottom: '12px',
+        borderBottom: '1px solid var(--border-subtle)',
+        flexWrap: 'wrap'
+      }}>
       {/* Left Trail & Category Context */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flexWrap: 'wrap' }}>
         {isInsideSubfolder && (
@@ -308,5 +349,6 @@ export function Breadcrumbs() {
         </div>
       </div>
     </div>
+    </>
   );
 }
