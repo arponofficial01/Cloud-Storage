@@ -69,12 +69,27 @@ export function AuthProvider({ children }) {
   const buildUser = (supaUser, prof) => {
     if (!supaUser) return null;
     const meta = supaUser.user_metadata || {};
-    const resolvedPin =
-      prof?.pin !== undefined && prof?.pin !== null
-        ? prof.pin
-        : meta.pin !== undefined
-        ? meta.pin
-        : null;
+
+    // Compare timestamps so whichever record (Auth metadata vs profiles table) was updated most recently ALWAYS wins
+    const metaTime = meta.settings_updated_at ? new Date(meta.settings_updated_at).getTime() : 0;
+    const profTime = prof?.updated_at ? new Date(prof.updated_at).getTime() : 0;
+    const preferMeta = metaTime >= profTime;
+
+    const pick = (metaVal, profVal, fallback) => {
+      if (preferMeta) {
+        if (metaVal !== undefined && metaVal !== null && metaVal !== '') return metaVal;
+        if (profVal !== undefined && profVal !== null && profVal !== '') return profVal;
+      } else {
+        if (profVal !== undefined && profVal !== null && profVal !== '') return profVal;
+        if (metaVal !== undefined && metaVal !== null && metaVal !== '') return metaVal;
+      }
+      return fallback;
+    };
+
+    const resolvedPin = preferMeta
+      ? (meta.pin !== undefined ? meta.pin : (prof?.pin ?? null))
+      : (prof?.pin !== undefined ? prof.pin : (meta.pin ?? null));
+
     const resolvedAutoLock =
       meta.autolock_minutes !== undefined ? Number(meta.autolock_minutes) : 15;
 
@@ -90,10 +105,10 @@ export function AuthProvider({ children }) {
     return {
       id:              supaUser.id,
       email:           supaUser.email,
-      username:        prof?.username || meta.username || supaUser.email?.split('@')[0] || 'Vault Owner',
-      avatar:          prof?.avatar   || meta.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(supaUser.id)}`,
-      plan:            prof?.plan     || meta.plan || 'Free Tier (512 GB)',
-      theme:           prof?.theme    || meta.theme || 'dark',
+      username:        pick(meta.username, prof?.username, supaUser.email?.split('@')[0] || 'Vault Owner'),
+      avatar:          pick(meta.avatar_url, prof?.avatar, `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(supaUser.id)}`),
+      plan:            pick(meta.plan, prof?.plan, 'Free Tier (512 GB)'),
+      theme:           pick(meta.theme, prof?.theme, 'dark'),
       pin:             resolvedPin,
       autoLockMinutes: resolvedAutoLock,
       isLocal:         false
@@ -129,11 +144,11 @@ export function AuthProvider({ children }) {
     } catch { return null; }
   };
 
-  // Helper to purge stale Supabase tokens from localStorage
+  // Helper to purge ONLY old/deleted Supabase project tokens — NEVER delete the live project token!
   const clearDeadSupabaseTokens = () => {
     try {
       Object.keys(localStorage).forEach(k => {
-        if (k.startsWith('sb-') && (k.endsWith('-auth-token') || k.includes('hbecbsxdagfcmlrruoxc'))) {
+        if (k.startsWith('sb-') && (k.includes('hbecbsxdagfcmlrruoxc') || k.includes('tevidnouvazxndgzlvsl'))) {
           localStorage.removeItem(k);
         }
       });
@@ -144,8 +159,31 @@ export function AuthProvider({ children }) {
     let mounted = true;
     clearDeadSupabaseTokens();
 
+    const syncFromLiveSupabase = async () => {
+      if (!isLiveSupabase || !mounted) return;
+      try {
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('SUPABASE_TIMEOUT')), 4000)
+        );
+        const res = await Promise.race([supabase.auth.getUser(), timeoutPromise]);
+        if (!mounted) return;
+        const liveSupaUser = res?.data?.user;
+        if (liveSupaUser) {
+          const prof = await fetchProfile(liveSupaUser);
+          const u = buildUser(liveSupaUser, prof);
+          setProfile(prof);
+          setUser(u);
+          saveLocalAccount(u);
+          safeSetLocalStorage(LOCAL_USER_KEY, JSON.stringify(u));
+          applyTheme(u.theme);
+        }
+      } catch {
+        // Offline or no active cloud token — keep local session intact
+      }
+    };
+
     const init = async () => {
-      // 1. Check if user was previously signed in with a local/cached session (instant 0ms load!)
+      // 1. Check if user was previously signed in with a cached session (instant 0ms load!)
       const savedLocal = localStorage.getItem(LOCAL_USER_KEY);
       if (savedLocal) {
         try {
@@ -161,37 +199,24 @@ export function AuthProvider({ children }) {
         }
       }
 
-      // 2. Always sync latest Account Settings (username, avatar, theme, PIN, plan, auto-lock) from live Supabase in the background
-      if (isLiveSupabase) {
-        try {
-          const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('SUPABASE_TIMEOUT')), 2500)
-          );
-          const userPromise = supabase.auth.getUser();
-          const res = await Promise.race([userPromise, timeoutPromise]);
-
-          if (!mounted) return;
-          const liveSupaUser = res?.data?.user;
-          if (liveSupaUser) {
-            const prof = await fetchProfile(liveSupaUser);
-            const u    = buildUser(liveSupaUser, prof);
-            setProfile(prof);
-            setUser(u);
-            saveLocalAccount(u);
-            safeSetLocalStorage(LOCAL_USER_KEY, JSON.stringify(u));
-            applyTheme(u.theme);
-          }
-        } catch {
-          // Offline or no active cloud token — keep local session intact
-        }
-      }
+      // 2. Always fetch fresh Account Settings (avatar, username, theme, PIN, plan, auto-lock) from live Supabase
+      await syncFromLiveSupabase();
 
       if (mounted) setAuthLoading(false);
     };
 
     init();
 
-    // Listen to Supabase auth changes if live (handles email confirmation link redirects automatically)
+    // Auto-refresh account settings whenever user switches back to this browser/mobile tab
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        syncFromLiveSupabase();
+      }
+    };
+    window.addEventListener('focus', syncFromLiveSupabase);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
+    // Listen to Supabase auth changes if live (handles email confirmation link redirects & token refreshes)
     let subscription = null;
     if (isLiveSupabase) {
       try {
@@ -212,7 +237,8 @@ export function AuthProvider({ children }) {
                 username: u.username,
                 avatar: u.avatar,
                 plan: u.plan,
-                theme: u.theme
+                theme: u.theme,
+                updated_at: new Date().toISOString()
               }, { onConflict: 'id' });
             } catch {}
           } else if (event === 'SIGNED_OUT') {
@@ -228,6 +254,8 @@ export function AuthProvider({ children }) {
 
     return () => {
       mounted = false;
+      window.removeEventListener('focus', syncFromLiveSupabase);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       if (subscription) subscription.unsubscribe();
     };
   }, []);
@@ -457,6 +485,7 @@ export function AuthProvider({ children }) {
   const changeTheme = async (newTheme) => {
     applyTheme(newTheme);
     if (user) {
+      const now = new Date().toISOString();
       const updated = { ...user, theme: newTheme, avatar: sanitizeAvatarForStorage(user.avatar) };
       setUser({ ...user, theme: newTheme });
       saveLocalAccount(updated);
@@ -464,8 +493,8 @@ export function AuthProvider({ children }) {
       if (!user.isLocal && isLiveSupabase) {
         try {
           await Promise.all([
-            supabase.auth.updateUser({ data: { theme: newTheme } }),
-            supabase.from('profiles').upsert({ id: user.id, email: user.email, theme: newTheme }, { onConflict: 'id' })
+            supabase.auth.updateUser({ data: { theme: newTheme, settings_updated_at: now } }),
+            supabase.from('profiles').upsert({ id: user.id, email: user.email, theme: newTheme, updated_at: now }, { onConflict: 'id' })
           ]);
         } catch {}
       }
@@ -474,6 +503,7 @@ export function AuthProvider({ children }) {
 
   const updatePin = async (pin) => {
     if (!user) return { success: false, error: 'Not authenticated' };
+    const now = new Date().toISOString();
     const cleanPin = pin ? String(pin).trim() : null;
     const updated = { ...user, pin: cleanPin, avatar: sanitizeAvatarForStorage(user.avatar) };
     setUser({ ...user, pin: cleanPin });
@@ -487,8 +517,8 @@ export function AuthProvider({ children }) {
     if (!user.isLocal && isLiveSupabase) {
       try {
         await Promise.all([
-          supabase.auth.updateUser({ data: { pin: cleanPin } }),
-          supabase.from('profiles').upsert({ id: user.id, email: user.email, pin: cleanPin }, { onConflict: 'id' })
+          supabase.auth.updateUser({ data: { pin: cleanPin, settings_updated_at: now } }),
+          supabase.from('profiles').upsert({ id: user.id, email: user.email, pin: cleanPin, updated_at: now }, { onConflict: 'id' })
         ]);
       } catch {}
     }
@@ -544,20 +574,32 @@ export function AuthProvider({ children }) {
           ...(plan     !== undefined && { plan })
         }));
         try {
-          const metaUpdates = {};
+          const now = new Date().toISOString();
+          const metaUpdates = { settings_updated_at: now };
           if (username !== undefined) metaUpdates.username   = username;
           if (avatar   !== undefined) metaUpdates.avatar_url = safeAvatar;
           if (plan     !== undefined) metaUpdates.plan       = plan;
           if (autoLockMinutes !== undefined) metaUpdates.autolock_minutes = autoLockMinutes;
-          if (Object.keys(metaUpdates).length > 0) {
-            await supabase.auth.updateUser({ data: metaUpdates });
-          }
-          const profileUpdates = { id: user.id, email: user.email };
+
+          const profileUpdates = { id: user.id, email: user.email, updated_at: now };
           if (username !== undefined) profileUpdates.username = username;
           if (avatar   !== undefined) profileUpdates.avatar   = safeAvatar;
           if (plan     !== undefined) profileUpdates.plan     = plan;
-          await supabase.from('profiles').upsert(profileUpdates, { onConflict: 'id' });
-        } catch {}
+
+          const [authRes, profRes] = await Promise.all([
+            supabase.auth.updateUser({ data: metaUpdates }),
+            supabase.from('profiles').upsert(profileUpdates, { onConflict: 'id' })
+          ]);
+
+          if (authRes?.error) {
+            console.warn('[AuthSync] auth.updateUser error:', authRes.error.message);
+          }
+          if (profRes?.error) {
+            console.warn('[AuthSync] profiles.upsert error:', profRes.error.message);
+          }
+        } catch (syncErr) {
+          console.warn('[AuthSync] Cloud sync warning:', syncErr);
+        }
       }
 
       return { success: true };

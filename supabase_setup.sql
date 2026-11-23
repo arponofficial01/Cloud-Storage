@@ -71,7 +71,11 @@ create index if not exists idx_vault_folders_user on public.vault_folders(user_i
 create index if not exists idx_activity_logs_user on public.activity_logs(user_id);
 create index if not exists idx_activity_logs_timestamp on public.activity_logs(timestamp desc);
 
--- 6. ENABLE ROW LEVEL SECURITY (RLS)
+-- 6. GRANT SCHEMA & TABLE PERMISSIONS TO ANON & AUTHENTICATED ROLES
+grant usage on schema public to anon, authenticated;
+grant all on table public.profiles, public.vault_files, public.vault_folders, public.activity_logs to anon, authenticated;
+
+-- 7. ENABLE ROW LEVEL SECURITY (RLS)
 alter table public.profiles enable row level security;
 alter table public.vault_files enable row level security;
 alter table public.vault_folders enable row level security;

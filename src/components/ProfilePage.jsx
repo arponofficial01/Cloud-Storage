@@ -230,19 +230,19 @@ export function ProfilePage() {
       setProfileMsg({ type: 'error', text: 'Profile image must be under 10 MB.' });
       return;
     }
-    // Compress & downscale onto a 200x200 canvas (~8KB) so localStorage never hits QuotaExceededError
+    // Compress & downscale onto a compact 120x120 JPEG (~2.5-3.5KB) so it syncs reliably across all devices via Supabase Auth & Profiles
     const img = new Image();
     const url = URL.createObjectURL(f);
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      const maxDim = 200;
+      const maxDim = 120;
       const scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
       canvas.width = Math.max(1, Math.round(img.width * scale));
       canvas.height = Math.max(1, Math.round(img.height * scale));
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       URL.revokeObjectURL(url);
-      const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.82);
+      const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.68);
       setAvatarPreview(compressedDataUrl);
       setProfileMsg(null);
     };
