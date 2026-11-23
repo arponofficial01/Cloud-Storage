@@ -238,6 +238,7 @@ export function FilePreviewModal() {
       onClick={() => setActivePreview(null)}
     >
       <div
+        className="preview-modal-shell"
         onClick={(e) => e.stopPropagation()}
         style={{
           width: isFullscreen ? '100vw' : '94vw',
@@ -253,17 +254,20 @@ export function FilePreviewModal() {
         }}
       >
         {/* Top Control Bar */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '10px 16px',
-          borderBottom: '1px solid var(--border-subtle)',
-          background: 'var(--bg-surface)',
-          flexShrink: 0,
-          gap: '12px',
-          flexWrap: 'wrap'
-        }}>
+        <div
+          className="preview-modal-header"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '10px 16px',
+            borderBottom: '1px solid var(--border-subtle)',
+            background: 'var(--bg-surface)',
+            flexShrink: 0,
+            gap: '12px',
+            flexWrap: 'wrap'
+          }}
+        >
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
             <span style={{
               fontSize: '0.68rem',
@@ -303,7 +307,7 @@ export function FilePreviewModal() {
             )}
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+          <div className="preview-modal-actions" style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
             {activePreview.inTrash && (
               <button
                 className="btn btn-secondary"

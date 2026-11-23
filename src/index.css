@@ -434,7 +434,9 @@ body {
 
 /* Mobile Bottom Bar & Mobile Category Strip (hidden on desktop) */
 .mobile-bottom-bar,
-.mobile-category-strip {
+.mobile-category-strip,
+.vault-item-menu-backdrop,
+.vault-item-menu-title {
   display: none;
 }
 
@@ -488,9 +490,121 @@ tbody tr:hover {
     margin-bottom: 10px;
     border-bottom: 1px solid var(--border-subtle);
     scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
   }
   .mobile-category-strip::-webkit-scrollbar {
     display: none;
+  }
+
+  /* Mobile Breadcrumbs & Action Toolbar */
+  .breadcrumbs-bar {
+    gap: 10px !important;
+    margin-bottom: 12px !important;
+    padding-bottom: 10px !important;
+  }
+  .breadcrumbs-subtitle {
+    display: none !important;
+  }
+  .breadcrumbs-actions {
+    width: 100% !important;
+    justify-content: space-between !important;
+    gap: 6px !important;
+  }
+  .breadcrumbs-actions > button {
+    flex: 1 1 auto !important;
+    justify-content: center !important;
+    height: 34px !important;
+  }
+
+  /* Proportioned 2-Column Mobile Cards */
+  .vault-folder-card {
+    min-height: 104px !important;
+    padding: 11px !important;
+  }
+  .vault-media-card,
+  .vault-doc-card {
+    min-height: 168px !important;
+    padding: 10px !important;
+  }
+  .vault-media-hero {
+    height: 108px !important;
+    width: calc(100% + 20px) !important;
+    margin: -10px -10px 8px -10px !important;
+  }
+  .vault-doc-preview {
+    height: 82px !important;
+    margin-bottom: 8px !important;
+  }
+
+  /* Mobile Native Bottom Action Sheet for File/Folder Context Menus */
+  .vault-item-menu-backdrop {
+    display: block !important;
+    position: fixed !important;
+    inset: 0 !important;
+    background: rgba(0, 0, 0, 0.58) !important;
+    backdrop-filter: blur(2px) !important;
+    z-index: 2850 !important;
+  }
+  .vault-item-menu {
+    position: fixed !important;
+    top: auto !important;
+    left: 10px !important;
+    right: 10px !important;
+    bottom: 70px !important;
+    width: auto !important;
+    padding: 10px !important;
+    border-radius: 12px !important;
+    border: 1px solid var(--border-strong) !important;
+    box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.7) !important;
+    z-index: 2900 !important;
+    gap: 3px !important;
+    animation: slideUp 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  }
+  .vault-item-menu-title {
+    display: block !important;
+    font-size: 0.75rem !important;
+    font-weight: 600 !important;
+    color: var(--text-muted) !important;
+    padding: 4px 10px 8px 10px !important;
+    margin-bottom: 4px !important;
+    border-bottom: 1px solid var(--border-subtle) !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+  .vault-item-menu button {
+    padding: 10px 12px !important;
+    font-size: 0.84rem !important;
+    border-radius: 8px !important;
+  }
+
+  /* Mobile Stacked Format Converter Studio */
+  .converter-main-grid {
+    grid-template-columns: 1fr !important;
+    gap: 14px !important;
+  }
+  .converter-main-grid > div:first-child {
+    max-height: 260px !important;
+  }
+
+  /* Mobile Full-Screen Lightbox Preview & Scrollable Actions */
+  .preview-modal-shell {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    border-radius: 0 !important;
+    border: none !important;
+  }
+  .preview-modal-header {
+    padding: 10px 12px !important;
+    gap: 8px !important;
+  }
+  .preview-modal-actions {
+    width: 100% !important;
+    overflow-x: auto !important;
+    justify-content: flex-end !important;
+    padding-bottom: 2px !important;
   }
 
   .mobile-bottom-bar {

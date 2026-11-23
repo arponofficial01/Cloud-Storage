@@ -133,16 +133,19 @@ export function Breadcrumbs() {
         })}
       </div>
 
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: '12px',
-        marginBottom: '16px',
-        paddingBottom: '12px',
-        borderBottom: '1px solid var(--border-subtle)',
-        flexWrap: 'wrap'
-      }}>
+      <div
+        className="breadcrumbs-bar"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '12px',
+          marginBottom: '16px',
+          paddingBottom: '12px',
+          borderBottom: '1px solid var(--border-subtle)',
+          flexWrap: 'wrap'
+        }}
+      >
       {/* Left Trail & Category Context */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flexWrap: 'wrap' }}>
         {isInsideSubfolder && (
@@ -191,7 +194,7 @@ export function Breadcrumbs() {
                 <div style={{ fontSize: '0.96rem', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.2 }}>
                   {currentCategory.title}
                 </div>
-                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                <div className="breadcrumbs-subtitle" style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                   {currentCategory.subtitle}
                 </div>
               </div>
@@ -265,7 +268,7 @@ export function Breadcrumbs() {
       </div>
 
       {/* Right Controls: New Folder/File, Empty Trash, Select All & Counter */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
+      <div className="breadcrumbs-actions" style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
         {activeCategory !== 'trash' && activeCategory !== 'starred' && (
           <>
             <button

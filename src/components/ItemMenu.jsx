@@ -121,26 +121,38 @@ export function ItemMenu({
   };
 
   return (
-    <div
-      ref={menuRef}
-      onClick={(e) => e.stopPropagation()}
-      style={{
-        position: 'absolute',
-        top: '100%',
-        right: '0',
-        marginTop: '4px',
-        width: '180px',
-        background: 'var(--bg-modal)',
-        border: '1px solid var(--border-subtle)',
-        borderRadius: '7px',
-        boxShadow: '0 12px 32px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--border-subtle)',
-        padding: '5px',
-        zIndex: 1000,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '1px'
-      }}
-    >
+    <>
+      <div
+        className="vault-item-menu-backdrop"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+      />
+      <div
+        ref={menuRef}
+        className="vault-item-menu"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: 'absolute',
+          top: '100%',
+          right: '0',
+          marginTop: '4px',
+          width: '180px',
+          background: 'var(--bg-modal)',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: '7px',
+          boxShadow: '0 12px 32px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--border-subtle)',
+          padding: '5px',
+          zIndex: 1000,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '1px'
+        }}
+      >
+        <div className="vault-item-menu-title">
+          <span>{item.name}</span>
+        </div>
       {!item.inTrash ? (
         <>
           {isFolder && onOpenFolder && (
@@ -341,7 +353,8 @@ export function ItemMenu({
           </button>
         </>
       )}
-    </div>
+      </div>
+    </>
   );
 }
 

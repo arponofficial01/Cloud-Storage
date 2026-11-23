@@ -684,7 +684,7 @@ export function ConverterStudioPage() {
       </div>
 
       {/* Main Grid: Vault Picker & Converter Options */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 340px) 1fr', gap: '20px', marginBottom: '24px' }}>
+      <div className="converter-main-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 340px) 1fr', gap: '20px', marginBottom: '24px' }}>
 
         {/* Left Column: Select File from Vault / Computer */}
         <div className="glass-panel" style={{

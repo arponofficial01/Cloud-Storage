@@ -313,7 +313,7 @@ function FolderCard({ folder, activeMenuId, setActiveMenuId, onRename }) {
 
   return (
     <div
-      className="glass-panel"
+      className="glass-panel vault-folder-card"
       onClick={handleCardClick}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -513,7 +513,7 @@ function FileGridCard({ file, activeMenuId, setActiveMenuId, onRename, onEditMed
     const isVideoCard = file.category === 'video';
     return (
       <div
-        className="glass-panel"
+        className="glass-panel vault-media-card"
         onClick={() => setActivePreview(file)}
         onContextMenu={(e) => {
           e.preventDefault();
@@ -539,16 +539,19 @@ function FileGridCard({ file, activeMenuId, setActiveMenuId, onRename, onEditMed
         }}
       >
         {/* Borderless Edge-to-Edge Media Hero Container */}
-        <div style={{
-          position: 'relative',
-          width: 'calc(100% + 24px)',
-          margin: '-12px -12px 10px -12px',
-          height: '138px',
-          background: '#090a0f',
-          borderTopLeftRadius: 'var(--radius-md)',
-          borderTopRightRadius: 'var(--radius-md)',
-          overflow: 'hidden'
-        }}>
+        <div
+          className="vault-media-hero"
+          style={{
+            position: 'relative',
+            width: 'calc(100% + 24px)',
+            margin: '-12px -12px 10px -12px',
+            height: '138px',
+            background: '#090a0f',
+            borderTopLeftRadius: 'var(--radius-md)',
+            borderTopRightRadius: 'var(--radius-md)',
+            overflow: 'hidden'
+          }}
+        >
           {thumbUrl ? (
             isVideoCard ? (
               <div style={{ position: 'relative', width: '100%', height: '100%' }}>
@@ -735,7 +738,7 @@ function FileGridCard({ file, activeMenuId, setActiveMenuId, onRename, onEditMed
   // ── 2. Color-Coded Document & Code Cards ──────────────────────────────────────
   return (
     <div
-      className="glass-panel"
+      className="glass-panel vault-doc-card"
       onClick={() => setActivePreview(file)}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -829,18 +832,21 @@ function FileGridCard({ file, activeMenuId, setActiveMenuId, onRename, onEditMed
       </div>
 
       {/* Outside Preview Representation with Distinct Color Theme */}
-      <div style={{
-        height: '105px',
-        borderRadius: '7px',
-        background: 'var(--bg-input)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        overflow: 'hidden',
-        position: 'relative',
-        marginBottom: '10px',
-        border: '1px solid var(--border-subtle)'
-      }}>
+      <div
+        className="vault-doc-preview"
+        style={{
+          height: '105px',
+          borderRadius: '7px',
+          background: 'var(--bg-input)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          overflow: 'hidden',
+          position: 'relative',
+          marginBottom: '10px',
+          border: '1px solid var(--border-subtle)'
+        }}
+      >
         {file.category === 'video' && thumbUrl ? (
           <div style={{ position: 'relative', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <video src={thumbUrl} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
