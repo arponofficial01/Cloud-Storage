@@ -1169,8 +1169,9 @@ export function ProfilePage() {
                       onClick={() => {
                         setAutoLockMinsState(opt.val);
                         setAutoLockMinutes(opt.val);
+                        updateUserProfile({ autoLockMinutes: opt.val });
                         setSecurityLogs(getSecurityAuditLogs());
-                        if (addToast) addToast(opt.val > 0 ? `Auto-lock set to ${opt.val} minutes` : 'Idle auto-lock disabled', 'info');
+                        if (addToast) addToast(opt.val > 0 ? `Auto-lock set to ${opt.val} minutes (synced across devices)` : 'Idle auto-lock disabled', 'info');
                       }}
                       style={{
                         padding: '5px 11px',

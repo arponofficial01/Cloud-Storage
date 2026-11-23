@@ -14,7 +14,8 @@ import {
   Mail,
   User,
   ShieldCheck,
-  RefreshCw
+  RefreshCw,
+  Monitor
 } from 'lucide-react';
 
 export function AuthLandingPage() {
@@ -203,6 +204,26 @@ export function AuthLandingPage() {
             <ShieldCheck size={12} color="var(--accent-primary)" />
             <span>AES-256 Zero-Knowledge Security</span>
           </div>
+        </div>
+
+        {/* Desktop Experience Recommendation Notice */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          padding: '9px 12px',
+          marginBottom: '14px',
+          borderRadius: '8px',
+          background: 'var(--bg-surface)',
+          border: '1px solid var(--border-subtle)',
+          fontSize: '0.74rem',
+          color: 'var(--text-secondary)',
+          lineHeight: 1.4
+        }}>
+          <Monitor size={15} color="var(--accent-primary)" style={{ flexShrink: 0 }} />
+          <span>
+            <strong style={{ color: 'var(--text-primary)', fontWeight: 600 }}>Desktop Recommended:</strong> Use a Desktop or Laptop PC for the best full-studio experience and Windows Cloud Drive mounting.
+          </span>
         </div>
 
         {/* Tab Switcher */}
