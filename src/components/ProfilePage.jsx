@@ -1290,7 +1290,6 @@ export function ProfilePage() {
           }}
           title="Restricted to platform system administrators only"
         >
-          <Lock size={10} />
           <span>Staff Only: System Admin</span>
         </button>
       </div>

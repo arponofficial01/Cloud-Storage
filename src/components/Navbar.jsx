@@ -15,8 +15,7 @@ import {
   Sun,
   Moon,
   Menu,
-  HardDrive,
-  Lock
+  HardDrive
 } from 'lucide-react';
 
 export function Navbar({ onOpenAiCopilot, onToggleMobileSidebar, onOpenSubscription }) {
@@ -27,8 +26,7 @@ export function Navbar({ onOpenAiCopilot, onToggleMobileSidebar, onOpenSubscript
     setViewMode,
     setIsCommandPaletteOpen,
     setIsActivityLogOpen,
-    setActiveCategory,
-    addToast
+    setActiveCategory
   } = useStorage();
 
   const { user, theme, changeTheme, signOut } = useAuth();
@@ -220,25 +218,6 @@ export function Navbar({ onOpenAiCopilot, onToggleMobileSidebar, onOpenSubscript
         >
           <Bot size={14} color="var(--accent-primary)" />
           <span className="desktop-only">AI Agent</span>
-        </button>
-
-        {/* Instant Vault Security Lock / Shield Button */}
-        <button
-          className="btn btn-ghost btn-icon"
-          onClick={() => {
-            const activePin = user?.pin || localStorage.getItem('storagebank_vault_pin');
-            if (activePin) {
-              window.dispatchEvent(new CustomEvent('storagebank:lock-vault'));
-              if (addToast) addToast('Vault session locked', 'info');
-            } else {
-              setActiveCategory('profile');
-              if (addToast) addToast('Configure a 4-digit PIN in Security & PIN settings to lock your vault', 'info');
-            }
-          }}
-          style={{ height: '32px', width: '32px', padding: 0, borderRadius: '7px', border: '1px solid var(--border-subtle)' }}
-          title={user?.pin ? 'Lock Vault Session Immediately' : 'Security & PIN Settings'}
-        >
-          <Lock size={14} color={user?.pin ? 'var(--accent-emerald)' : 'var(--text-secondary)'} />
         </button>
 
         {/* Activity Log Trigger - Desktop Only */}

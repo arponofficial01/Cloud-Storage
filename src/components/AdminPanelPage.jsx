@@ -25,7 +25,6 @@ import {
   X,
   KeyRound,
   CreditCard,
-  Mail,
   LogOut
 } from 'lucide-react';
 
@@ -551,7 +550,6 @@ export function AdminPanelPage() {
           letterSpacing: '0.06em',
           marginBottom: '12px'
         }}>
-          <Lock size={11} />
           <span>Restricted Area &bull; Staff &amp; System Administrators Only</span>
         </div>
 
@@ -587,8 +585,7 @@ export function AdminPanelPage() {
             Administrator Sign In (Gmail &amp; Password)
           </div>
           <form onSubmit={handleUnlockAdmin} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <div style={{ position: 'relative' }}>
-              <Mail size={13} style={{ position: 'absolute', left: '11px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+            <div>
               <input
                 type="email"
                 className="input-text"
@@ -597,12 +594,11 @@ export function AdminPanelPage() {
                 onChange={(e) => { setAdminEmailInput(e.target.value); setAuthError(''); }}
                 required
                 autoComplete="email"
-                style={{ height: '36px', paddingLeft: '32px', fontSize: '0.81rem', borderRadius: '6px' }}
+                style={{ height: '36px', padding: '0 12px', fontSize: '0.81rem', borderRadius: '6px' }}
               />
             </div>
 
             <div style={{ position: 'relative' }}>
-              <Lock size={13} style={{ position: 'absolute', left: '11px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
               <input
                 type={showAdminPass ? 'text' : 'password'}
                 className="input-text"
@@ -611,7 +607,7 @@ export function AdminPanelPage() {
                 onChange={(e) => { setAdminPassInput(e.target.value); setAuthError(''); }}
                 required
                 autoComplete="current-password"
-                style={{ height: '36px', paddingLeft: '32px', paddingRight: '34px', fontSize: '0.81rem', borderRadius: '6px' }}
+                style={{ height: '36px', padding: '0 34px 0 12px', fontSize: '0.81rem', borderRadius: '6px' }}
               />
               <button
                 type="button"
