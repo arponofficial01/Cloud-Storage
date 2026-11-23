@@ -34,8 +34,8 @@ const LOCAL_USER_KEY = 'storagebank_local_user';
 const BKASH_TX_LOG_KEY = 'storagebank_bkash_transactions';
 const ADMIN_CREDS_STORAGE = 'storagebank_admin_credentials';
 const ADMIN_SESSION_STORAGE = 'storagebank_admin_session_unlocked';
-const DEFAULT_ADMIN_GMAIL = 'itzarpon69@gmail.com';
-const DEFAULT_ADMIN_PASS = 'arpon@admin';
+const DEFAULT_ADMIN_GMAIL = 'arponchakraborty02@gmail.com';
+const DEFAULT_ADMIN_PASS = 'Arpon@2027@';
 
 function getStoredAdminCredentials() {
   try {
@@ -592,7 +592,7 @@ export function AdminPanelPage() {
               <input
                 type="email"
                 className="input-text"
-                placeholder="Administrator Gmail (e.g. itzarpon69@gmail.com)"
+                placeholder="Administrator Email"
                 value={adminEmailInput}
                 onChange={(e) => { setAdminEmailInput(e.target.value); setAuthError(''); }}
                 required
@@ -788,7 +788,7 @@ export function AdminPanelPage() {
               className="input-text"
               value={cfgAdminEmail}
               onChange={e => setCfgAdminEmail(e.target.value)}
-              placeholder="itzarpon69@gmail.com"
+              placeholder="Administrator Email"
               style={{ height: '34px', fontSize: '0.8rem', borderRadius: '6px' }}
             />
           </div>
