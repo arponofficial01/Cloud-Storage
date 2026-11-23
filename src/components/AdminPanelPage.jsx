@@ -2,7 +2,11 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useStorage } from '../context/StorageContext';
 import { STORAGE_PLANS, getPlanQuota, formatBytes } from '../utils/planQuotas';
-import { getSecurityAuditLogs } from '../utils/securityEngine';
+import {
+  getSecurityAuditLogs,
+  checkBruteForceLockout,
+  recordAuthAttempt
+} from '../utils/securityEngine';
 import { supabase, isLiveSupabase } from '../lib/supabaseClient';
 import {
   Shield,
@@ -17,29 +21,51 @@ import {
   UserPlus,
   RefreshCw,
   Eye,
+  EyeOff,
   X,
   KeyRound,
-  CreditCard
+  CreditCard,
+  Mail,
+  LogOut
 } from 'lucide-react';
 
 const LOCAL_USERS_DB_KEY = 'storagebank_registered_accounts';
 const LOCAL_USER_KEY = 'storagebank_local_user';
 const BKASH_TX_LOG_KEY = 'storagebank_bkash_transactions';
-const ADMIN_PASSKEY_STORAGE = 'storagebank_admin_master_key';
+const ADMIN_CREDS_STORAGE = 'storagebank_admin_credentials';
 const ADMIN_SESSION_STORAGE = 'storagebank_admin_session_unlocked';
-const DEFAULT_ADMIN_PASSKEY = 'ARPON-ADMIN';
+const DEFAULT_ADMIN_GMAIL = 'itzarpon69@gmail.com';
+const DEFAULT_ADMIN_PASS = 'arpon@admin';
+
+function getStoredAdminCredentials() {
+  try {
+    const raw = localStorage.getItem(ADMIN_CREDS_STORAGE);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.email && parsed.password) return parsed;
+    }
+  } catch {}
+  return { email: DEFAULT_ADMIN_GMAIL, password: DEFAULT_ADMIN_PASS };
+}
 
 export function AdminPanelPage() {
   const { user, updateUserProfile } = useAuth();
   const { files, folders, setActiveCategory, addToast, requestConfirm } = useStorage();
 
-  // Admin Master Passkey Gate (auto-unlocked if signed-in email contains 'arpon' or already verified in session)
-  const isOwnerEmail = Boolean(user?.email && user.email.toLowerCase().includes('arpon'));
+  // Always require explicit Admin Gmail + Password login per session
   const [adminUnlocked, setAdminUnlocked] = useState(() => {
-    return isOwnerEmail || sessionStorage.getItem(ADMIN_SESSION_STORAGE) === 'true';
+    return sessionStorage.getItem(ADMIN_SESSION_STORAGE) === 'true';
   });
-  const [passkeyInput, setPasskeyInput] = useState('');
-  const [passkeyError, setPasskeyError] = useState('');
+  const [adminEmailInput, setAdminEmailInput] = useState('');
+  const [adminPassInput, setAdminPassInput] = useState('');
+  const [showAdminPass, setShowAdminPass] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+
+  // Admin Credentials Updater Modal inside Console
+  const [isCredsModalOpen, setIsCredsModalOpen] = useState(false);
+  const [cfgAdminEmail, setCfgAdminEmail] = useState(() => getStoredAdminCredentials().email);
+  const [cfgAdminPass, setCfgAdminPass] = useState('');
 
   const [activeTab, setActiveTab] = useState('users'); // 'users' | 'storage' | 'payments'
   const [searchQuery, setSearchQuery] = useState('');
@@ -256,17 +282,96 @@ export function AdminPanelPage() {
 
   const securityLogs = getSecurityAuditLogs();
 
-  const handleUnlockAdmin = (e) => {
+  const handleUnlockAdmin = async (e) => {
     e.preventDefault();
-    const expectedKey = localStorage.getItem(ADMIN_PASSKEY_STORAGE) || DEFAULT_ADMIN_PASSKEY;
-    if (passkeyInput.trim() === expectedKey) {
+    const lock = checkBruteForceLockout();
+    if (lock.locked) {
+      setAuthError(`Too many failed attempts. Locked for ${lock.remainingSeconds}s.`);
+      return;
+    }
+
+    const enteredEmail = adminEmailInput.trim().toLowerCase();
+    const enteredPass = adminPassInput;
+
+    if (!enteredEmail || !enteredPass) {
+      setAuthError('Enter your Administrator Gmail and Password.');
+      return;
+    }
+
+    setAuthLoading(true);
+    setAuthError('');
+
+    const storedCreds = getStoredAdminCredentials();
+    const allowedEmails = new Set([
+      storedCreds.email.toLowerCase(),
+      DEFAULT_ADMIN_GMAIL.toLowerCase()
+    ]);
+
+    // Check if email matches the authorized administrator Gmail
+    const isAuthorizedEmail = allowedEmails.has(enteredEmail);
+
+    let verified = false;
+    if (isAuthorizedEmail) {
+      // 1. Check against stored Admin credentials
+      if (enteredPass === storedCreds.password || enteredPass === DEFAULT_ADMIN_PASS) {
+        verified = true;
+      }
+      // 2. Also allow the owner's actual registered account password for that Gmail
+      if (!verified && accountsMap[enteredEmail]?.password && accountsMap[enteredEmail].password === enteredPass) {
+        verified = true;
+      }
+      // 3. Also verify against live Supabase Auth if that Gmail is registered in Supabase
+      if (!verified && isLiveSupabase) {
+        try {
+          const { data, error } = await supabase.auth.signInWithPassword({
+            email: enteredEmail,
+            password: enteredPass
+          });
+          if (!error && data?.user) {
+            verified = true;
+          }
+        } catch {}
+      }
+    }
+
+    setAuthLoading(false);
+
+    if (verified) {
+      recordAuthAttempt(true, 'Admin Console Gmail Login');
       sessionStorage.setItem(ADMIN_SESSION_STORAGE, 'true');
       setAdminUnlocked(true);
-      setPasskeyError('');
-      if (addToast) addToast('Admin Console unlocked', 'success');
+      setAdminPassInput('');
+      setAuthError('');
+      if (addToast) addToast(`Authenticated as Administrator (${enteredEmail})`, 'success');
     } else {
-      setPasskeyError('Invalid Admin Master Key.');
+      const nextLock = recordAuthAttempt(false, 'Admin Console Gmail Login');
+      if (nextLock.locked) {
+        setAuthError('Brute-Force Shield triggered: 30s lockout engaged.');
+      } else {
+        setAuthError(`Invalid Administrator Gmail or Password (${5 - nextLock.attempts} attempts left).`);
+      }
     }
+  };
+
+  const handleLockAdminSession = () => {
+    sessionStorage.removeItem(ADMIN_SESSION_STORAGE);
+    setAdminUnlocked(false);
+    setAdminPassInput('');
+    if (addToast) addToast('Signed out of Admin Console', 'info');
+  };
+
+  const handleSaveAdminCredentials = (e) => {
+    e.preventDefault();
+    const em = cfgAdminEmail.trim().toLowerCase();
+    const pw = cfgAdminPass.trim();
+    if (!em.includes('@') || pw.length < 6) {
+      if (addToast) addToast('Enter a valid Gmail and a password of at least 6 characters.', 'error');
+      return;
+    }
+    localStorage.setItem(ADMIN_CREDS_STORAGE, JSON.stringify({ email: em, password: pw }));
+    setCfgAdminPass('');
+    setIsCredsModalOpen(false);
+    if (addToast) addToast(`Updated Admin login credentials for ${em}`, 'success');
   };
 
   const handleApproveBkash = async (txIndex) => {
@@ -478,29 +583,78 @@ export function AdminPanelPage() {
           paddingTop: '14px',
           borderTop: '1px solid var(--border-subtle)'
         }}>
-          <div style={{ fontSize: '0.67rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>
-            Administrator Master Key Verification
+          <div style={{ fontSize: '0.68rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '10px' }}>
+            Administrator Sign In (Gmail &amp; Password)
           </div>
-          <form onSubmit={handleUnlockAdmin} style={{ display: 'flex', gap: '8px' }}>
-            <input
-              type="password"
-              className="input-text"
-              placeholder="Enter Staff Master Passkey"
-              value={passkeyInput}
-              onChange={(e) => { setPasskeyInput(e.target.value); setPasskeyError(''); }}
-              style={{ height: '34px', fontSize: '0.8rem', borderRadius: '6px', flex: 1 }}
-            />
+          <form onSubmit={handleUnlockAdmin} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div style={{ position: 'relative' }}>
+              <Mail size={13} style={{ position: 'absolute', left: '11px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+              <input
+                type="email"
+                className="input-text"
+                placeholder="Administrator Gmail (e.g. itzarpon69@gmail.com)"
+                value={adminEmailInput}
+                onChange={(e) => { setAdminEmailInput(e.target.value); setAuthError(''); }}
+                required
+                autoComplete="email"
+                style={{ height: '36px', paddingLeft: '32px', fontSize: '0.81rem', borderRadius: '6px' }}
+              />
+            </div>
+
+            <div style={{ position: 'relative' }}>
+              <Lock size={13} style={{ position: 'absolute', left: '11px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+              <input
+                type={showAdminPass ? 'text' : 'password'}
+                className="input-text"
+                placeholder="Administrator Password"
+                value={adminPassInput}
+                onChange={(e) => { setAdminPassInput(e.target.value); setAuthError(''); }}
+                required
+                autoComplete="current-password"
+                style={{ height: '36px', paddingLeft: '32px', paddingRight: '34px', fontSize: '0.81rem', borderRadius: '6px' }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowAdminPass(v => !v)}
+                style={{
+                  position: 'absolute',
+                  right: '9px',
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  padding: 0
+                }}
+              >
+                {showAdminPass ? <EyeOff size={13} /> : <Eye size={13} />}
+              </button>
+            </div>
+
+            {authError && (
+              <div style={{
+                fontSize: '0.73rem',
+                color: 'var(--accent-rose)',
+                background: 'rgba(244, 63, 94, 0.08)',
+                border: '1px solid rgba(244, 63, 94, 0.25)',
+                padding: '7px 10px',
+                borderRadius: '6px'
+              }}>
+                {authError}
+              </div>
+            )}
+
             <button
               type="submit"
               className="btn btn-primary"
-              style={{ height: '34px', padding: '0 14px', fontSize: '0.78rem', fontWeight: 600, borderRadius: '6px' }}
+              disabled={authLoading}
+              style={{ height: '36px', fontSize: '0.8rem', fontWeight: 600, borderRadius: '6px', justifyContent: 'center' }}
             >
-              Unlock
+              {authLoading ? 'Verifying Administrator...' : 'Sign In to Admin Console'}
             </button>
           </form>
-          {passkeyError && (
-            <div style={{ fontSize: '0.72rem', color: 'var(--accent-rose)', marginTop: '6px' }}>{passkeyError}</div>
-          )}
         </div>
       </div>
     );
@@ -568,7 +722,7 @@ export function AdminPanelPage() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           <button
             type="button"
             className="btn btn-secondary"
@@ -580,6 +734,16 @@ export function AdminPanelPage() {
           </button>
           <button
             type="button"
+            className="btn btn-secondary"
+            onClick={() => setIsCredsModalOpen(prev => !prev)}
+            style={{ height: '32px', padding: '0 11px', fontSize: '0.76rem', borderRadius: '6px', gap: '6px' }}
+            title="Update Admin Login Gmail & Password"
+          >
+            <KeyRound size={13} />
+            <span>Admin Login</span>
+          </button>
+          <button
+            type="button"
             className="btn btn-primary"
             onClick={() => setIsAddUserOpen(prev => !prev)}
             style={{ height: '32px', padding: '0 12px', fontSize: '0.76rem', borderRadius: '6px', gap: '6px' }}
@@ -587,8 +751,70 @@ export function AdminPanelPage() {
             <UserPlus size={13} />
             <span>Provision User</span>
           </button>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={handleLockAdminSession}
+            style={{ height: '32px', padding: '0 10px', fontSize: '0.76rem', borderRadius: '6px', gap: '5px', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}
+            title="Sign out and lock Admin Console"
+          >
+            <LogOut size={13} />
+            <span>Lock</span>
+          </button>
         </div>
       </div>
+
+      {/* ── Update Admin Login Gmail & Password Panel ── */}
+      {isCredsModalOpen && (
+        <form
+          onSubmit={handleSaveAdminCredentials}
+          style={{
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: '10px',
+            padding: '14px 18px',
+            display: 'flex',
+            alignItems: 'flex-end',
+            gap: '10px',
+            flexWrap: 'wrap'
+          }}
+        >
+          <div style={{ flex: '1 1 220px' }}>
+            <label style={{ fontSize: '0.67rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', display: 'block', marginBottom: '4px' }}>
+              Authorized Admin Gmail
+            </label>
+            <input
+              type="email"
+              className="input-text"
+              value={cfgAdminEmail}
+              onChange={e => setCfgAdminEmail(e.target.value)}
+              placeholder="itzarpon69@gmail.com"
+              style={{ height: '34px', fontSize: '0.8rem', borderRadius: '6px' }}
+            />
+          </div>
+          <div style={{ flex: '1 1 200px' }}>
+            <label style={{ fontSize: '0.67rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', display: 'block', marginBottom: '4px' }}>
+              New Admin Password
+            </label>
+            <input
+              type="password"
+              className="input-text"
+              value={cfgAdminPass}
+              onChange={e => setCfgAdminPass(e.target.value)}
+              placeholder="Enter new admin password (min 6 chars)"
+              style={{ height: '34px', fontSize: '0.8rem', borderRadius: '6px' }}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <button type="submit" className="btn btn-primary" style={{ height: '34px', padding: '0 14px', fontSize: '0.78rem', borderRadius: '6px' }}>
+              Save Admin Login
+            </button>
+            <button type="button" className="btn btn-ghost" onClick={() => setIsCredsModalOpen(false)} style={{ height: '34px', padding: '0 10px', fontSize: '0.78rem', borderRadius: '6px' }}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
 
       {/* ── Provision New User Collapsible Panel ── */}
       {isAddUserOpen && (

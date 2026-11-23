@@ -300,8 +300,8 @@ export function Sidebar({ isOpen, isCollapsed, onToggleCollapse, onCloseMobile }
             active={activeCategory === 'profile'} 
             onClick={() => handleCategoryClick('profile')} 
           />
-          {(user?.email?.toLowerCase().includes('arpon') ||
-            (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('storagebank_admin_session_unlocked') === 'true')) && (
+          {(typeof sessionStorage !== 'undefined' &&
+            sessionStorage.getItem('storagebank_admin_session_unlocked') === 'true') && (
             <NavItem 
               icon={<Shield size={15} />} 
               label="Staff Admin (Internal)" 
