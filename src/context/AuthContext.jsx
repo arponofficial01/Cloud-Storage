@@ -158,6 +158,8 @@ export function AuthProvider({ children }) {
             const u    = buildUser(session.user, prof);
             setProfile(prof);
             setUser(u);
+            saveLocalAccount(u);
+            safeSetLocalStorage(LOCAL_USER_KEY, JSON.stringify(u));
             applyTheme(u.theme);
           }
         } catch (err) {
@@ -170,7 +172,7 @@ export function AuthProvider({ children }) {
 
     init();
 
-    // Listen to Supabase auth changes if live
+    // Listen to Supabase auth changes if live (handles email confirmation link redirects automatically)
     let subscription = null;
     if (isLiveSupabase) {
       try {
@@ -181,13 +183,23 @@ export function AuthProvider({ children }) {
             const u    = buildUser(session.user, prof);
             setProfile(prof);
             setUser(u);
+            saveLocalAccount(u);
+            safeSetLocalStorage(LOCAL_USER_KEY, JSON.stringify(u));
             applyTheme(u.theme);
-          } else {
-            const savedLocal = localStorage.getItem(LOCAL_USER_KEY);
-            if (!savedLocal) {
-              setUser(null);
-              setProfile(null);
-            }
+            try {
+              await supabase.from('profiles').upsert({
+                id: u.id,
+                email: u.email,
+                username: u.username,
+                avatar: u.avatar,
+                plan: u.plan,
+                theme: u.theme
+              }, { onConflict: 'id' });
+            } catch {}
+          } else if (event === 'SIGNED_OUT') {
+            localStorage.removeItem(LOCAL_USER_KEY);
+            setUser(null);
+            setProfile(null);
           }
           setAuthLoading(false);
         });
@@ -206,34 +218,71 @@ export function AuthProvider({ children }) {
     const normalizedEmail = email.trim().toLowerCase();
     const cleanUsername = username.trim();
 
-    // If live Supabase is active, try registering with Supabase first
+    // If live Supabase is active, register with Supabase Auth
     if (isLiveSupabase) {
       try {
         const { data, error } = await supabase.auth.signUp({
           email: normalizedEmail,
           password,
-          options: { data: { username: cleanUsername } }
+          options: {
+            emailRedirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+            data: { username: cleanUsername }
+          }
         });
 
         if (error) {
-          // If error is network, DNS or Failed to fetch, seamlessly fall back to local vault account
           const isNetError = error.message?.includes('fetch') || error.message?.includes('network') || error.status === 0;
           if (!isNetError) {
             return { success: false, error: error.message };
           }
         } else if (data?.user) {
+          // Supabase returns an empty identities array if the email is already registered
+          if (Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+            return {
+              success: false,
+              error: 'An account with this email already exists. Please sign in.'
+            };
+          }
+
+          // Cache account metadata locally so display name & admin directory stay synced
+          const pendingRecord = {
+            id: data.user.id,
+            email: normalizedEmail,
+            username: cleanUsername,
+            avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(data.user.id)}`,
+            plan: 'Free Tier (512 GB)',
+            theme: 'dark',
+            pin: null,
+            status: 'active',
+            createdAt: new Date().toISOString()
+          };
+          saveLocalAccount(pendingRecord);
+
+          // If Supabase requires email confirmation, data.session will be null
+          if (!data.session) {
+            return {
+              success: true,
+              requiresEmailConfirmation: true,
+              email: normalizedEmail,
+              message: `Confirmation email sent to ${normalizedEmail}. Please verify your email inbox (or spam folder) and then sign in.`
+            };
+          }
+
+          // If email confirmation is disabled on Supabase and session is returned immediately:
           const prof = await fetchProfile(data.user);
           const u = buildUser(data.user, prof);
           setUser(u);
+          saveLocalAccount(u);
+          safeSetLocalStorage(LOCAL_USER_KEY, JSON.stringify(u));
           applyTheme(u.theme);
           return { success: true, user: u };
         }
       } catch {
-        // Fall back to local vault account on fetch failure
+        // Fall back to local vault account only on network offline failure
       }
     }
 
-    // High-speed Local Vault Registration
+    // Offline / Local Vault Registration fallback
     const accounts = getLocalAccounts();
     if (accounts[normalizedEmail]) {
       return { success: false, error: 'An account with this email already exists. Please sign in.' };
@@ -249,28 +298,69 @@ export function AuthProvider({ children }) {
   const signIn = async (email, password) => {
     const normalizedEmail = email.trim().toLowerCase();
 
-    // If live Supabase is active, try signing in with Supabase
+    // If live Supabase is active, authenticate against Supabase Auth
     if (isLiveSupabase) {
       try {
-        const { data, error } = await supabase.auth.signInWithPassword({ email: normalizedEmail, password });
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: normalizedEmail,
+          password
+        });
+
         if (error) {
-          const isNetError = error.message?.includes('fetch') || error.message?.includes('network') || error.status === 0;
-          if (!isNetError && !error.message?.toLowerCase().includes('invalid login credentials')) {
+          const msgLower = (error.message || '').toLowerCase();
+          if (msgLower.includes('email not confirmed')) {
+            return {
+              success: false,
+              requiresEmailConfirmation: true,
+              email: normalizedEmail,
+              error: 'Your email is not confirmed yet. Please open the confirmation link sent to your email before signing in.'
+            };
+          }
+          if (msgLower.includes('invalid login credentials')) {
+            // Check if this is a local-only account created while offline
+            const localAcc = getLocalAccounts()[normalizedEmail];
+            if (localAcc && localAcc.password && localAcc.password === password) {
+              const cleanExisting = { ...localAcc, avatar: sanitizeAvatarForStorage(localAcc.avatar) };
+              safeSetLocalStorage(LOCAL_USER_KEY, JSON.stringify(cleanExisting));
+              setUser(cleanExisting);
+              applyTheme(cleanExisting.theme || 'dark');
+              return { success: true, user: cleanExisting };
+            }
+            return {
+              success: false,
+              error: 'Invalid email or password. If you just registered, make sure you confirmed your email first.'
+            };
+          }
+          const isNetError = msgLower.includes('fetch') || msgLower.includes('network') || error.status === 0;
+          if (!isNetError) {
             return { success: false, error: error.message };
           }
         } else if (data?.user) {
           const prof = await fetchProfile(data.user);
-          const u = buildUser(data.user, prof);
+          const localCached = getLocalAccounts()[normalizedEmail];
+          const u = buildUser(data.user, prof || localCached);
           setUser(u);
+          saveLocalAccount(u);
+          safeSetLocalStorage(LOCAL_USER_KEY, JSON.stringify(u));
           applyTheme(u.theme);
+          try {
+            await supabase.from('profiles').upsert({
+              id: u.id,
+              email: u.email,
+              username: u.username,
+              avatar: u.avatar,
+              plan: u.plan,
+              theme: u.theme
+            }, { onConflict: 'id' });
+          } catch {}
           return { success: true, user: u };
         }
       } catch {
-        // Fall back to local vault account on fetch failure
+        // Fall back to local vault account on network failure
       }
     }
 
-    // High-speed Local Vault Sign-In
+    // Offline / Local Vault Sign-In fallback
     const accounts = getLocalAccounts();
     const existing = accounts[normalizedEmail];
 
@@ -286,6 +376,51 @@ export function AuthProvider({ children }) {
     }
 
     return { success: false, error: 'No account found with this email. Please register first.' };
+  };
+
+  const resendConfirmationEmail = async (email) => {
+    const normalizedEmail = (email || '').trim().toLowerCase();
+    if (!normalizedEmail || !isLiveSupabase) {
+      return { success: false, error: 'Enter a valid email address to resend confirmation.' };
+    }
+    try {
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email: normalizedEmail,
+        options: {
+          emailRedirectTo: typeof window !== 'undefined' ? window.location.origin : undefined
+        }
+      });
+      if (error) return { success: false, error: error.message };
+      return {
+        success: true,
+        message: `New confirmation link sent to ${normalizedEmail}. Check your inbox and spam folder.`
+      };
+    } catch (err) {
+      return { success: false, error: err.message || 'Could not resend confirmation email.' };
+    }
+  };
+
+  const resetPasswordForEmail = async (email) => {
+    const normalizedEmail = (email || '').trim().toLowerCase();
+    if (!normalizedEmail || !normalizedEmail.includes('@')) {
+      return { success: false, error: 'Please enter your email address first.' };
+    }
+    if (!isLiveSupabase) {
+      return { success: false, error: 'Password reset email requires an active cloud connection.' };
+    }
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+        redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined
+      });
+      if (error) return { success: false, error: error.message };
+      return {
+        success: true,
+        message: `Password recovery link sent to ${normalizedEmail}.`
+      };
+    } catch (err) {
+      return { success: false, error: err.message || 'Failed to send password reset email.' };
+    }
   };
 
   const signOut = async () => {
@@ -407,7 +542,8 @@ export function AuthProvider({ children }) {
   return (
     <AuthContext.Provider value={{
       user, profile, theme, authLoading,
-      signUp, signIn, signOut, changeTheme, updatePin, updatePassword, updateUserProfile,
+      signUp, signIn, signOut, resendConfirmationEmail, resetPasswordForEmail,
+      changeTheme, updatePin, updatePassword, updateUserProfile,
       loginUser:    signIn,
       registerUser: (username, email, password = 'changeme123') => signUp(email, password, username),
       logoutUser:   signOut,

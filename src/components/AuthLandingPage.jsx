@@ -13,11 +13,12 @@ import {
   CheckCircle2,
   Mail,
   User,
-  ShieldCheck
+  ShieldCheck,
+  RefreshCw
 } from 'lucide-react';
 
 export function AuthLandingPage() {
-  const { signUp, signIn, authLoading } = useAuth();
+  const { signUp, signIn, resendConfirmationEmail, resetPasswordForEmail, authLoading } = useAuth();
   const [isRegistering, setIsRegistering] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
 
@@ -30,7 +31,38 @@ export function AuthLandingPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+  const [pendingConfirmEmail, setPendingConfirmEmail] = useState('');
+  const [resendingEmail, setResendingEmail] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleResendConfirmation = async () => {
+    const targetEmail = pendingConfirmEmail || email.trim();
+    if (!targetEmail || resendingEmail) return;
+    setResendingEmail(true);
+    setErrorMsg('');
+    const res = await resendConfirmationEmail(targetEmail);
+    setResendingEmail(false);
+    if (res.success) {
+      setSuccessMsg(res.message);
+    } else {
+      setErrorMsg(res.error || 'Could not resend confirmation email.');
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    setErrorMsg('');
+    setSuccessMsg('');
+    if (!email.trim() || !email.includes('@')) {
+      setErrorMsg('Enter your email address above first, then click Forgot Password.');
+      return;
+    }
+    const res = await resetPasswordForEmail(email.trim());
+    if (res.success) {
+      setSuccessMsg(res.message);
+    } else {
+      setErrorMsg(res.error);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -63,12 +95,23 @@ export function AuthLandingPage() {
         const res = await signUp(email.trim(), password, username.trim());
         if (!res.success) {
           setErrorMsg(res.error || 'Registration failed. Please try again.');
+        } else if (res.requiresEmailConfirmation) {
+          // Switch immediately to Sign In view and show the Email Confirmation Required card
+          setPendingConfirmEmail(res.email || email.trim());
+          setIsRegistering(false);
+          setSuccessMsg(
+            res.message ||
+              'Account created! Please check your email inbox to confirm your account, then sign in below.'
+          );
         } else {
           setSuccessMsg('Account created successfully! Loading your vault...');
         }
       } else {
         const res = await signIn(email.trim(), password);
         if (!res.success) {
+          if (res.requiresEmailConfirmation) {
+            setPendingConfirmEmail(res.email || email.trim());
+          }
           setErrorMsg(res.error || 'Invalid email or password.');
         }
       }
@@ -211,6 +254,47 @@ export function AuthLandingPage() {
           </button>
         </div>
 
+        {/* Email Confirmation Required Card (Shown after Registration or if Email is Unconfirmed) */}
+        {pendingConfirmEmail && (
+          <div style={{
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: '9px',
+            padding: '12px 14px',
+            marginBottom: '14px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+              <Mail size={14} color="var(--accent-primary)" />
+              <span>Confirm Your Email to Sign In</span>
+            </div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+              We sent a verification link to <strong style={{ color: 'var(--text-primary)' }}>{pendingConfirmEmail}</strong>. Open your email inbox (or spam folder), click the confirmation link, and then sign in below.
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', paddingTop: '4px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleResendConfirmation}
+                disabled={resendingEmail}
+                style={{ padding: '4px 10px', fontSize: '0.72rem', borderRadius: '6px', gap: '5px', height: '28px' }}
+              >
+                <RefreshCw size={11} className={resendingEmail ? 'spin' : ''} />
+                <span>{resendingEmail ? 'Sending...' : 'Resend Confirmation Email'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setPendingConfirmEmail('')}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '0.7rem', cursor: 'pointer' }}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Error / Success Alerts */}
         {errorMsg && (
           <div style={{
@@ -232,16 +316,16 @@ export function AuthLandingPage() {
             background: 'rgba(16, 185, 129, 0.1)',
             border: '1px solid rgba(16, 185, 129, 0.25)',
             color: '#6ee7b7',
-            padding: '9px 12px',
+            padding: '10px 12px',
             borderRadius: '7px',
-            fontSize: '0.8rem',
+            fontSize: '0.78rem',
             marginBottom: '14px',
             display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            justifyContent: 'center'
+            alignItems: 'flex-start',
+            gap: '8px',
+            lineHeight: 1.4
           }}>
-            <CheckCircle2 size={14} />
+            <CheckCircle2 size={15} style={{ flexShrink: 0, marginTop: '1px' }} />
             <span>{successMsg}</span>
           </div>
         )}
@@ -321,7 +405,7 @@ export function AuthLandingPage() {
             </div>
           </div>
 
-          {/* Remember Me Checkbox */}
+          {/* Remember Me & Forgot Password */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '2px 0' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
               <input
@@ -332,6 +416,23 @@ export function AuthLandingPage() {
               />
               <span>Remember credentials</span>
             </label>
+
+            {!isRegistering && (
+              <button
+                type="button"
+                onClick={handleForgotPassword}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  fontSize: '0.74rem',
+                  cursor: 'pointer',
+                  padding: 0
+                }}
+              >
+                Forgot password?
+              </button>
+            )}
           </div>
 
           <button
