@@ -21,7 +21,6 @@ import {
   PanelLeftOpen,
   Monitor,
   User,
-  Shield,
   X
 } from 'lucide-react';
 
@@ -300,16 +299,6 @@ export function Sidebar({ isOpen, isCollapsed, onToggleCollapse, onCloseMobile }
             active={activeCategory === 'profile'} 
             onClick={() => handleCategoryClick('profile')} 
           />
-          {(typeof sessionStorage !== 'undefined' &&
-            sessionStorage.getItem('storagebank_admin_session_unlocked') === 'true') && (
-            <NavItem 
-              icon={<Shield size={15} />} 
-              label="Staff Admin (Internal)" 
-              isCollapsed={isCollapsed}
-              active={activeCategory === 'admin'} 
-              onClick={() => handleCategoryClick('admin')} 
-            />
-          )}
         </div>
 
         {/* Minimalist Matte Storage Quota Footer */}

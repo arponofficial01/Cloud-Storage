@@ -4,60 +4,75 @@
 
 import { supabase } from '../lib/supabaseClient';
 
-const withTimeout = (promise, ms = 1500) =>
+const withTimeout = (promise, ms = 4000) =>
   Promise.race([
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), ms))
   ]);
 
-// ── File Metadata Sync ────────────────────────────────────────────────────────
+// ── File Metadata Sync (Includes Telegram Cloud fileId/parts inside storage_path for cross-device sync) ──
 export async function syncFileToSupabase(fileRecord) {
+  if (!fileRecord || !fileRecord.id || !fileRecord.userId) return;
   try {
+    let encodedStoragePath = fileRecord.storagePath || null;
+    if (fileRecord.telegramFileId) {
+      encodedStoragePath =
+        fileRecord.isChunked && Array.isArray(fileRecord.parts)
+          ? JSON.stringify({
+              tg: fileRecord.telegramFileId,
+              msg: fileRecord.telegramMessageId || null,
+              parts: fileRecord.parts
+            })
+          : `tg:${fileRecord.telegramFileId}`;
+    }
+
     const { error } = await withTimeout(
       supabase.from('vault_files').upsert({
-        id:         fileRecord.id,
-        user_id:    fileRecord.userId,
-        folder_id:  fileRecord.folderId  || null,
-        name:       fileRecord.name,
-        type:       fileRecord.type,
-        category:   fileRecord.category,
-        size:       fileRecord.size      || 0,
-        storage_path: fileRecord.storagePath || null,
-        starred:    fileRecord.starred   || false,
-        in_trash:   fileRecord.inTrash   || false,
-        created_at: fileRecord.createdAt,
-        updated_at: fileRecord.updatedAt,
-        tags:       fileRecord.tags      || []
+        id:           fileRecord.id,
+        user_id:      fileRecord.userId,
+        folder_id:    fileRecord.folderId  || null,
+        name:         fileRecord.name,
+        type:         fileRecord.type,
+        category:     fileRecord.category,
+        size:         fileRecord.size      || 0,
+        storage_path: encodedStoragePath,
+        starred:      fileRecord.starred   || false,
+        in_trash:     fileRecord.inTrash   || false,
+        created_at:   fileRecord.createdAt,
+        updated_at:   fileRecord.updatedAt,
+        tags:         fileRecord.tags      || []
       }, { onConflict: 'id' }),
-      2000
+      4000
     );
 
     if (error) console.warn('[Supabase] syncFile error:', error.message);
-  } catch (err) {
+  } catch {
     // Offline or timed out - safe to ignore
   }
 }
 
-// ── Folder Metadata Sync ──────────────────────────────────────────────────────
+// ── Folder Metadata Sync (Encodes color|category for cross-device category preservation) ──
 export async function syncFolderToSupabase(folderRecord) {
+  if (!folderRecord || !folderRecord.id || !folderRecord.userId) return;
   try {
+    const encodedColor = `${folderRecord.color || '#6366f1'}|${folderRecord.category || 'all'}`;
     const { error } = await withTimeout(
       supabase.from('vault_folders').upsert({
         id:         folderRecord.id,
         user_id:    folderRecord.userId,
         parent_id:  folderRecord.parentId  || null,
         name:       folderRecord.name,
-        color:      folderRecord.color,
+        color:      encodedColor,
         starred:    folderRecord.starred   || false,
         in_trash:   folderRecord.inTrash   || false,
         created_at: folderRecord.createdAt,
         updated_at: folderRecord.updatedAt
       }, { onConflict: 'id' }),
-      2000
+      4000
     );
 
     if (error) console.warn('[Supabase] syncFolder error:', error.message);
-  } catch (err) {
+  } catch {
     // Offline or timed out - safe to ignore
   }
 }
@@ -120,30 +135,60 @@ export async function fetchFilesFromSupabase(userId) {
         .from('vault_files')
         .select('*')
         .eq('user_id', userId),
-      1500
+      4000
     );
 
-    if (error) {
+    if (error || !Array.isArray(data)) {
       return [];
     }
-    if (!Array.isArray(data)) return [];
 
-    return data.map(item => ({
-      id:        item.id,
-      userId:    item.user_id,
-      folderId:  item.folder_id,
-      name:      item.name,
-      type:      item.type,
-      category:  item.category,
-      size:      item.size,
-      storagePath: item.storage_path || null,
-      starred:   !!item.starred,
-      inTrash:   !!item.in_trash,
-      createdAt: item.created_at,
-      updatedAt: item.updated_at,
-      tags:      Array.isArray(item.tags) ? item.tags : []
-    }));
-  } catch (err) {
+    return data.map(item => {
+      const rawPath = item.storage_path || null;
+      let storageProvider = null;
+      let telegramFileId = null;
+      let telegramMessageId = null;
+      let parts = null;
+      let isChunked = false;
+      let storagePath = rawPath;
+
+      if (typeof rawPath === 'string' && rawPath.startsWith('tg:')) {
+        storageProvider = 'telegram';
+        telegramFileId = rawPath.slice(3);
+        storagePath = null;
+      } else if (typeof rawPath === 'string' && rawPath.startsWith('{"tg":')) {
+        try {
+          const parsed = JSON.parse(rawPath);
+          storageProvider = 'telegram';
+          telegramFileId = parsed.tg || null;
+          telegramMessageId = parsed.msg || null;
+          parts = Array.isArray(parsed.parts) ? parsed.parts : null;
+          isChunked = Boolean(parts && parts.length > 0);
+          storagePath = null;
+        } catch {}
+      }
+
+      return {
+        id:                item.id,
+        userId:            item.user_id,
+        folderId:          item.folder_id,
+        name:              item.name,
+        type:              item.type,
+        category:          item.category,
+        size:              item.size,
+        storagePath,
+        storageProvider,
+        telegramFileId,
+        telegramMessageId,
+        parts,
+        isChunked,
+        starred:           !!item.starred,
+        inTrash:           !!item.in_trash,
+        createdAt:         item.created_at,
+        updatedAt:         item.updated_at,
+        tags:              Array.isArray(item.tags) ? item.tags : []
+      };
+    });
+  } catch {
     return [];
   }
 }
@@ -157,26 +202,33 @@ export async function fetchFoldersFromSupabase(userId) {
         .from('vault_folders')
         .select('*')
         .eq('user_id', userId),
-      1500
+      4000
     );
 
-    if (error) {
+    if (error || !Array.isArray(data)) {
       return [];
     }
-    if (!Array.isArray(data)) return [];
 
-    return data.map(item => ({
-      id:        item.id,
-      userId:    item.user_id,
-      parentId:  item.parent_id,
-      name:      item.name,
-      color:     item.color,
-      starred:   !!item.starred,
-      inTrash:   !!item.in_trash,
-      createdAt: item.created_at,
-      updatedAt: item.updated_at
-    }));
-  } catch (err) {
+    return data.map(item => {
+      const rawColor = item.color || '#6366f1';
+      const [cleanColor, decodedCat] = rawColor.includes('|')
+        ? rawColor.split('|')
+        : [rawColor, 'all'];
+
+      return {
+        id:        item.id,
+        userId:    item.user_id,
+        parentId:  item.parent_id,
+        name:      item.name,
+        color:     cleanColor || '#6366f1',
+        category:  decodedCat || 'all',
+        starred:   !!item.starred,
+        inTrash:   !!item.in_trash,
+        createdAt: item.created_at,
+        updatedAt: item.updated_at
+      };
+    });
+  } catch {
     return [];
   }
 }

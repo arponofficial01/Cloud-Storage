@@ -366,27 +366,93 @@ export function StorageProvider({ children }) {
         getActivityLogsDB()
       ]);
 
-      const localFiles = allF.filter(f => !f.userId || f.userId === user.id);
-      const localFolders = allFold.filter(f => !f.userId || f.userId === user.id);
-      const localLogs = logs.filter(l => !l.userId || l.userId === user.id);
+      const localFiles = allF.filter(f => f.userId === user.id);
+      const localFolders = allFold.filter(f => f.userId === user.id);
+      const localLogs = logs.filter(l => l.userId === user.id);
 
       setFiles(localFiles);
       setFolders(localFolders);
       setActivityLogs(localLogs);
       setLoading(false);
 
-      // Heal & sync any files:
-      // 1) If a file has a blob but no telegramFileId, back it up to Telegram Cloud
-      // 2) If a file lost its local blob in an earlier session but has telegramFileId/parts, restore and persist its properly typed Blob immediately so it opens in 0ms
+      // 2. Background Cloud Sync from Supabase (Cross-Device Master Index)
+      const [remoteFiles, remoteFolders, remoteLogs] = await Promise.all([
+        fetchFilesFromSupabase(user.id),
+        fetchFoldersFromSupabase(user.id),
+        fetchActivityLogsFromSupabase(user.id)
+      ]);
+
+      const remoteFileIds = new Set(remoteFiles.map(rf => rf.id));
+      const remoteFolderIds = new Set(remoteFolders.map(rf => rf.id));
+
+      // Merge local + remote files
+      const fileMap = new Map();
+      localFiles.forEach(f => fileMap.set(f.id, f));
+      remoteFiles.forEach(rf => {
+        const existing = fileMap.get(rf.id);
+        const merged = {
+          ...existing,
+          ...rf,
+          telegramFileId: rf.telegramFileId || existing?.telegramFileId || null,
+          parts: rf.parts || existing?.parts || null,
+          isChunked: rf.isChunked || existing?.isChunked || false,
+          storageProvider: rf.storageProvider || existing?.storageProvider || null,
+          blob: existing?.blob instanceof Blob ? existing.blob : (rf.blob || null)
+        };
+        fileMap.set(rf.id, merged);
+        dbSaveFile(merged);
+      });
+
+      // Merge local + remote folders
+      const folderMap = new Map();
+      localFolders.forEach(f => folderMap.set(f.id, f));
+      remoteFolders.forEach(rf => {
+        const existing = folderMap.get(rf.id);
+        const merged = {
+          ...existing,
+          ...rf,
+          category: rf.category || existing?.category || 'all'
+        };
+        folderMap.set(rf.id, merged);
+        dbSaveFolder(merged);
+      });
+
+      // Merge logs
+      const logMap = new Map();
+      localLogs.forEach(l => logMap.set(l.id, l));
+      remoteLogs.forEach(rl => {
+        logMap.set(rl.id, rl);
+        logActivityDB(rl);
+      });
+
+      const mergedFilesList = Array.from(fileMap.values());
+      const mergedFoldersList = Array.from(folderMap.values());
+
+      setFiles(mergedFilesList);
+      setFolders(mergedFoldersList);
+      setActivityLogs(Array.from(logMap.values()));
+
+      // Push any local-only folders up to Supabase so other devices receive them
+      localFolders.forEach(lf => {
+        if (!remoteFolderIds.has(lf.id)) {
+          syncFolderToSupabase(lf);
+        }
+      });
+
+      // Heal & sync all files across Telegram Cloud + Supabase:
+      // 1) If a file has a local blob but no telegramFileId, upload it to Telegram Cloud and sync to Supabase
+      // 2) If a file is already on Telegram Cloud but not yet in Supabase remoteFiles, push metadata to Supabase
+      // 3) If a file was synced from another device via Supabase (has telegramFileId/parts, no local blob), download its binary blob from Telegram Cloud so it opens in 0ms
       if (isTelegramCloudEnabled()) {
-        localFiles.forEach(async (lf) => {
-          if (lf.blob instanceof Blob && !lf.telegramFileId) {
+        mergedFilesList.forEach(async (mf) => {
+          if (mf.blob instanceof Blob && !mf.telegramFileId) {
             try {
-              const tgRes = await uploadFileToTelegram(lf.name, lf.blob);
+              const tgRes = await uploadFileToTelegram(mf.name, mf.blob);
               if (tgRes && tgRes.fileId) {
                 const updated = {
-                  ...lf,
-                  type: inferMimeType(lf.name, lf.type),
+                  ...mf,
+                  userId: user.id,
+                  type: inferMimeType(mf.name, mf.type),
                   storageProvider: 'telegram',
                   telegramFileId: tgRes.fileId,
                   telegramMessageId: tgRes.messageId,
@@ -394,63 +460,30 @@ export function StorageProvider({ children }) {
                   isChunked: tgRes.isChunked || false
                 };
                 await dbSaveFile(updated);
-                setFiles(prev => prev.map(f => f.id === lf.id ? updated : f));
+                setFiles(prev => prev.map(f => f.id === mf.id ? updated : f));
+                await syncFileToSupabase(updated);
               }
             } catch {}
-          } else if (!(lf.blob instanceof Blob) && (lf.telegramFileId || (lf.parts && lf.parts.length > 0))) {
-            try {
-              const restoredBlob = await downloadTelegramFileBlob(lf);
-              if (restoredBlob instanceof Blob) {
-                const healed = {
-                  ...lf,
-                  type: inferMimeType(lf.name, lf.type),
-                  blob: restoredBlob
-                };
-                await dbSaveFile(healed);
-                setFiles(prev => prev.map(f => f.id === lf.id ? healed : f));
-              }
-            } catch {}
+          } else {
+            if (!remoteFileIds.has(mf.id)) {
+              syncFileToSupabase(mf);
+            }
+            if (!(mf.blob instanceof Blob) && (mf.telegramFileId || (mf.parts && mf.parts.length > 0))) {
+              try {
+                const restoredBlob = await downloadTelegramFileBlob(mf);
+                if (restoredBlob instanceof Blob) {
+                  const healed = {
+                    ...mf,
+                    type: inferMimeType(mf.name, mf.type),
+                    blob: restoredBlob
+                  };
+                  await dbSaveFile(healed);
+                  setFiles(prev => prev.map(f => f.id === mf.id ? healed : f));
+                }
+              } catch {}
+            }
           }
         });
-      }
-
-      // 2. Background Cloud Sync from Supabase
-      const [remoteFiles, remoteFolders, remoteLogs] = await Promise.all([
-        fetchFilesFromSupabase(user.id),
-        fetchFoldersFromSupabase(user.id),
-        fetchActivityLogsFromSupabase(user.id)
-      ]);
-
-      if (remoteFiles.length > 0 || remoteFolders.length > 0 || remoteLogs.length > 0) {
-        // Merge files
-        const fileMap = new Map();
-        localFiles.forEach(f => fileMap.set(f.id, f));
-        remoteFiles.forEach(rf => {
-          const existing = fileMap.get(rf.id);
-          const merged = { ...rf, blob: existing?.blob || rf.blob || null };
-          fileMap.set(rf.id, merged);
-          dbSaveFile(merged);
-        });
-
-        // Merge folders
-        const folderMap = new Map();
-        localFolders.forEach(f => folderMap.set(f.id, f));
-        remoteFolders.forEach(rf => {
-          folderMap.set(rf.id, rf);
-          dbSaveFolder(rf);
-        });
-
-        // Merge logs
-        const logMap = new Map();
-        localLogs.forEach(l => logMap.set(l.id, l));
-        remoteLogs.forEach(rl => {
-          logMap.set(rl.id, rl);
-          logActivityDB(rl);
-        });
-
-        setFiles(Array.from(fileMap.values()));
-        setFolders(Array.from(folderMap.values()));
-        setActivityLogs(Array.from(logMap.values()));
       }
     } catch (err) {
       console.error('[Vault] Failed to load:', err);
@@ -460,6 +493,15 @@ export function StorageProvider({ children }) {
   };
 
   useEffect(() => {
+    try {
+      sessionStorage.removeItem('storagebank_admin_session_unlocked');
+    } catch {}
+    setActiveCategory('all');
+    setCurrentFolderId(null);
+    setFolderPath([{ id: null, name: 'My Vault' }]);
+    setSelectedItems([]);
+    setActivePreview(null);
+
     if (!user) {
       // User signed out — clear all state immediately
       setFiles([]);
@@ -714,9 +756,10 @@ export function StorageProvider({ children }) {
       await new Promise(r => setTimeout(r, 0));
     }
 
-    // Background cloud sync: Telegram Cloud (100% Free CDN) if configured, else Supabase
+    // Background cloud sync: upload binary to Telegram Cloud AND sync metadata + telegramFileId to Supabase for cross-device sync
     addedRecords.forEach(async (r) => {
       try {
+        await syncFileToSupabase(r);
         if (r.blob && isTelegramCloudEnabled()) {
           const tgResult = await uploadFileToTelegram(r.name, r.blob);
           if (tgResult && tgResult.fileId) {
@@ -727,6 +770,7 @@ export function StorageProvider({ children }) {
             r.isChunked = tgResult.isChunked || false;
             await dbSaveFile(r);
             setFiles(prev => prev.map(f => f.id === r.id ? { ...f, ...r } : f));
+            await syncFileToSupabase(r);
           }
         } else if (r.blob) {
           const storagePath = await uploadFileBlobToSupabase(user.id, r.id, r.name, r.blob);
@@ -734,8 +778,8 @@ export function StorageProvider({ children }) {
             r.storagePath = storagePath;
             await dbSaveFile(r);
             setFiles(prev => prev.map(f => f.id === r.id ? { ...f, ...r } : f));
+            await syncFileToSupabase(r);
           }
-          await syncFileToSupabase(r);
         }
       } catch (err) {
         console.warn('Background cloud sync warning:', err);
@@ -863,23 +907,27 @@ export function StorageProvider({ children }) {
   };
 
   const saveFile = async (fileObj) => {
+    const recordWithUser = {
+      ...fileObj,
+      userId: fileObj.userId && fileObj.userId !== 'local' ? fileObj.userId : (user?.id || 'local')
+    };
     setFiles(prev => {
-      const idx = prev.findIndex(f => f.id === fileObj.id);
-      if (idx >= 0) { const next = [...prev]; next[idx] = fileObj; return next; }
-      return [fileObj, ...prev];
+      const idx = prev.findIndex(f => f.id === recordWithUser.id);
+      if (idx >= 0) { const next = [...prev]; next[idx] = recordWithUser; return next; }
+      return [recordWithUser, ...prev];
     });
-    if (activePreview && activePreview.id === fileObj.id) {
-      setActivePreview(fileObj);
+    if (activePreview && activePreview.id === recordWithUser.id) {
+      setActivePreview(recordWithUser);
     }
-    await dbSaveFile(fileObj);
-    syncFileToSupabase(fileObj);
+    await dbSaveFile(recordWithUser);
+    syncFileToSupabase(recordWithUser);
 
-    // Background stream to Telegram Cloud so 0 bytes are needed on local disk
-    if (fileObj.blob instanceof Blob && isTelegramCloudEnabled()) {
-      uploadFileToTelegram(fileObj.name, fileObj.blob).then(async (tgResult) => {
+    // Background stream to Telegram Cloud and sync telegramFileId to Supabase so every device receives the file
+    if (recordWithUser.blob instanceof Blob && isTelegramCloudEnabled()) {
+      uploadFileToTelegram(recordWithUser.name, recordWithUser.blob).then(async (tgResult) => {
         if (tgResult && tgResult.fileId) {
           const synced = {
-            ...fileObj,
+            ...recordWithUser,
             storageProvider: 'telegram',
             telegramFileId: tgResult.fileId,
             telegramMessageId: tgResult.messageId,
@@ -887,13 +935,14 @@ export function StorageProvider({ children }) {
             isChunked: tgResult.isChunked || false
           };
           await dbSaveFile(synced);
-          setFiles(prev => prev.map(f => f.id === fileObj.id ? synced : f));
+          setFiles(prev => prev.map(f => f.id === recordWithUser.id ? synced : f));
+          await syncFileToSupabase(synced);
         }
       }).catch(() => {});
     }
   };
 
-  // Replace original — keeps same file ID, streams new blob to Cloud Vault and saves metadata only
+  // Replace original — keeps same file ID, streams new blob to Cloud Vault and syncs across all devices
   const replaceFile = async (originalId, newBlob, extraMeta = {}) => {
     const now = new Date().toISOString();
     let updated;
@@ -923,6 +972,7 @@ export function StorageProvider({ children }) {
             };
             await dbSaveFile(cloudSynced);
             setFiles(prev => prev.map(f => f.id === originalId ? cloudSynced : f));
+            await syncFileToSupabase(cloudSynced);
           }
         }).catch(() => {});
       }

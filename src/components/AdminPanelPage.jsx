@@ -51,10 +51,13 @@ export function AdminPanelPage() {
   const { user, updateUserProfile } = useAuth();
   const { files, folders, setActiveCategory, addToast, requestConfirm } = useStorage();
 
-  // Always require explicit Admin Gmail + Password login per session
-  const [adminUnlocked, setAdminUnlocked] = useState(() => {
-    return sessionStorage.getItem(ADMIN_SESSION_STORAGE) === 'true';
-  });
+  // Always start LOCKED on every visit or user switch — requires explicit Admin Gmail + Password login
+  const [adminUnlocked, setAdminUnlocked] = useState(false);
+
+  useEffect(() => {
+    sessionStorage.removeItem(ADMIN_SESSION_STORAGE);
+    setAdminUnlocked(false);
+  }, [user?.id]);
   const [adminEmailInput, setAdminEmailInput] = useState('');
   const [adminPassInput, setAdminPassInput] = useState('');
   const [showAdminPass, setShowAdminPass] = useState(false);
