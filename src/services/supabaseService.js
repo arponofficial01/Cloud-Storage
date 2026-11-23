@@ -45,15 +45,20 @@ export async function syncFileToSupabase(fileRecord) {
       4000
     );
 
-    if (error) console.warn('[Supabase] syncFile error:', error.message);
+    if (error) {
+      console.warn('[Supabase] syncFile error:', error.message);
+      return false;
+    }
+    return true;
   } catch {
     // Offline or timed out - safe to ignore
+    return false;
   }
 }
 
 // ── Folder Metadata Sync (Encodes color|category for cross-device category preservation) ──
 export async function syncFolderToSupabase(folderRecord) {
-  if (!folderRecord || !folderRecord.id || !folderRecord.userId) return;
+  if (!folderRecord || !folderRecord.id || !folderRecord.userId) return false;
   try {
     const encodedColor = `${folderRecord.color || '#6366f1'}|${folderRecord.category || 'all'}`;
     const { error } = await withTimeout(
@@ -71,9 +76,14 @@ export async function syncFolderToSupabase(folderRecord) {
       4000
     );
 
-    if (error) console.warn('[Supabase] syncFolder error:', error.message);
+    if (error) {
+      console.warn('[Supabase] syncFolder error:', error.message);
+      return false;
+    }
+    return true;
   } catch {
     // Offline or timed out - safe to ignore
+    return false;
   }
 }
 
@@ -93,56 +103,66 @@ export async function syncActivityLogToSupabase(logRecord) {
     );
 
     if (error) console.warn('[Supabase] syncLog error:', error.message);
-  } catch (err) {
+  } catch {
     // Offline or timed out - safe to ignore
   }
 }
 
 // ── Delete File ───────────────────────────────────────────────────────────────
 export async function deleteFileFromSupabase(id) {
-  if (!id) return;
+  if (!id) return false;
   try {
     const { error } = await withTimeout(
       supabase.from('vault_files').delete().eq('id', id),
-      2000
+      4000
     );
-    if (error) console.warn('[Supabase] deleteFile error:', error.message);
-  } catch (err) {
+    if (error) {
+      console.warn('[Supabase] deleteFile error:', error.message);
+      return false;
+    }
+    return true;
+  } catch {
     // Offline or timed out - safe to ignore
+    return false;
   }
 }
 
 // ── Delete Folder ─────────────────────────────────────────────────────────────
 export async function deleteFolderFromSupabase(id) {
-  if (!id) return;
+  if (!id) return false;
   try {
     const { error } = await withTimeout(
       supabase.from('vault_folders').delete().eq('id', id),
-      2000
+      4000
     );
-    if (error) console.warn('[Supabase] deleteFolder error:', error.message);
-  } catch (err) {
+    if (error) {
+      console.warn('[Supabase] deleteFolder error:', error.message);
+      return false;
+    }
+    return true;
+  } catch {
     // Offline or timed out - safe to ignore
+    return false;
   }
 }
 
-// ── Fetch Files for User ──────────────────────────────────────────────────────
-export async function fetchFilesFromSupabase(userId) {
-  if (!userId) return [];
+// ── Fetch Files for User (with reachability status to prevent zombie resurrection) ──
+export async function fetchFilesFromSupabaseWithStatus(userId) {
+  if (!userId) return { ok: false, items: [] };
   try {
     const { data, error } = await withTimeout(
       supabase
         .from('vault_files')
         .select('*')
         .eq('user_id', userId),
-      4000
+      4500
     );
 
     if (error || !Array.isArray(data)) {
-      return [];
+      return { ok: false, items: [] };
     }
 
-    return data.map(item => {
+    const items = data.map(item => {
       const rawPath = item.storage_path || null;
       let storageProvider = null;
       let telegramFileId = null;
@@ -185,52 +205,66 @@ export async function fetchFilesFromSupabase(userId) {
         inTrash:           !!item.in_trash,
         createdAt:         item.created_at,
         updatedAt:         item.updated_at,
-        tags:              Array.isArray(item.tags) ? item.tags : []
+        tags:              Array.isArray(item.tags) ? item.tags : [],
+        syncedToCloud:     true
       };
     });
+    return { ok: true, items };
   } catch {
-    return [];
+    return { ok: false, items: [] };
   }
 }
 
-// ── Fetch Folders for User ────────────────────────────────────────────────────
-export async function fetchFoldersFromSupabase(userId) {
-  if (!userId) return [];
+export async function fetchFilesFromSupabase(userId) {
+  const res = await fetchFilesFromSupabaseWithStatus(userId);
+  return res.items;
+}
+
+// ── Fetch Folders for User (with reachability status) ─────────────────────────
+export async function fetchFoldersFromSupabaseWithStatus(userId) {
+  if (!userId) return { ok: false, items: [] };
   try {
     const { data, error } = await withTimeout(
       supabase
         .from('vault_folders')
         .select('*')
         .eq('user_id', userId),
-      4000
+      4500
     );
 
     if (error || !Array.isArray(data)) {
-      return [];
+      return { ok: false, items: [] };
     }
 
-    return data.map(item => {
+    const items = data.map(item => {
       const rawColor = item.color || '#6366f1';
       const [cleanColor, decodedCat] = rawColor.includes('|')
         ? rawColor.split('|')
         : [rawColor, 'all'];
 
       return {
-        id:        item.id,
-        userId:    item.user_id,
-        parentId:  item.parent_id,
-        name:      item.name,
-        color:     cleanColor || '#6366f1',
-        category:  decodedCat || 'all',
-        starred:   !!item.starred,
-        inTrash:   !!item.in_trash,
-        createdAt: item.created_at,
-        updatedAt: item.updated_at
+        id:            item.id,
+        userId:        item.user_id,
+        parentId:      item.parent_id,
+        name:          item.name,
+        color:         cleanColor || '#6366f1',
+        category:      decodedCat || 'all',
+        starred:       !!item.starred,
+        inTrash:       !!item.in_trash,
+        createdAt:     item.created_at,
+        updatedAt:     item.updated_at,
+        syncedToCloud: true
       };
     });
+    return { ok: true, items };
   } catch {
-    return [];
+    return { ok: false, items: [] };
   }
+}
+
+export async function fetchFoldersFromSupabase(userId) {
+  const res = await fetchFoldersFromSupabaseWithStatus(userId);
+  return res.items;
 }
 
 // ── Fetch Activity Logs for User ──────────────────────────────────────────────
@@ -244,7 +278,7 @@ export async function fetchActivityLogsFromSupabase(userId) {
         .eq('user_id', userId)
         .order('timestamp', { ascending: false })
         .limit(200),
-      1500
+      2000
     );
 
     if (error) {
@@ -260,7 +294,7 @@ export async function fetchActivityLogsFromSupabase(userId) {
       timestamp: item.timestamp,
       status:    item.status
     }));
-  } catch (err) {
+  } catch {
     return [];
   }
 }

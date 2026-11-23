@@ -43,12 +43,12 @@ function getStoredAdminCredentials() {
       const parsed = JSON.parse(raw);
       if (parsed.email && parsed.password) return parsed;
     }
-  } catch {}
+  } catch { }
   return { email: DEFAULT_ADMIN_GMAIL, password: DEFAULT_ADMIN_PASS };
 }
 
 export function AdminPanelPage() {
-  const { user, updateUserProfile } = useAuth();
+  const { user, updateUserProfile, updatePin } = useAuth();
   const { files, folders, setActiveCategory, addToast, requestConfirm } = useStorage();
 
   // Always start LOCKED on every visit or user switch — requires explicit Admin Gmail + Password login
@@ -107,43 +107,89 @@ export function AdminPanelPage() {
         };
       }
 
-      // If live Supabase is reachable, merge any remote profiles
+      // If live Supabase is reachable, merge remote profiles, files, and cross-device bKash TrxID requests
       if (isLiveSupabase) {
         try {
           const { data: profs } = await Promise.race([
             supabase.from('profiles').select('*').limit(100),
-            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 1500))
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500))
           ]);
           if (Array.isArray(profs)) {
             profs.forEach(p => {
               const em = (p.email || `${p.username || p.id}@storagebank.vault`).toLowerCase();
               merged[em] = {
+                ...(merged[em] || {}),
                 id: p.id,
                 email: em,
-                username: p.username || em.split('@')[0],
-                plan: p.plan || STORAGE_PLANS.FREE.displayName,
-                pin: p.pin || null,
+                username: p.username || merged[em]?.username || em.split('@')[0],
+                avatar: p.avatar || merged[em]?.avatar || '',
+                plan: p.plan || merged[em]?.plan || STORAGE_PLANS.FREE.displayName,
+                pin: p.pin !== undefined ? p.pin : (merged[em]?.pin || null),
                 status: p.status || 'active',
-                role: p.id === user?.id ? 'Owner / Admin' : 'User',
-                createdAt: p.created_at || new Date().toISOString(),
-                ...(merged[em] || {})
+                role: p.id === user?.id ? 'Owner / Admin' : (merged[em]?.role || 'User'),
+                createdAt: p.created_at || merged[em]?.createdAt || new Date().toISOString()
               };
             });
           }
 
           const { data: allSupaFiles } = await Promise.race([
             supabase.from('vault_files').select('id, user_id, name, category, size, in_trash').limit(1000),
-            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 1500))
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500))
           ]);
           if (Array.isArray(allSupaFiles) && allSupaFiles.length > 0) {
             setRemoteFiles(allSupaFiles);
           }
-        } catch {}
+
+          // Pull cross-device bKash TrxID upgrade requests from Supabase activity_logs
+          const { data: remoteTxRows } = await Promise.race([
+            supabase
+              .from('activity_logs')
+              .select('*')
+              .eq('action', 'BKASH_REQUEST')
+              .order('timestamp', { ascending: false })
+              .limit(100),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500))
+          ]);
+
+          if (Array.isArray(remoteTxRows)) {
+            let localTx = [];
+            try {
+              const rawTx = localStorage.getItem(BKASH_TX_LOG_KEY);
+              localTx = rawTx ? JSON.parse(rawTx) : [];
+            } catch {}
+
+            const txMap = new Map();
+            localTx.forEach(tx => {
+              if (tx && tx.id) txMap.set(tx.id, tx);
+            });
+            remoteTxRows.forEach(row => {
+              try {
+                const parsedTx = typeof row.details === 'string' ? JSON.parse(row.details) : {};
+                const txObj = {
+                  ...parsedTx,
+                  id: row.id,
+                  userId: parsedTx.userId || row.user_id,
+                  status: row.status || parsedTx.status || 'pending',
+                  timestamp: parsedTx.timestamp || row.timestamp
+                };
+                txMap.set(txObj.id, txObj);
+              } catch {}
+            });
+
+            const combinedTx = Array.from(txMap.values()).sort(
+              (a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime()
+            );
+            setBkashList(combinedTx);
+            try {
+              localStorage.setItem(BKASH_TX_LOG_KEY, JSON.stringify(combinedTx.slice(0, 100)));
+            } catch {}
+          }
+        } catch { }
       }
 
       localStorage.setItem(LOCAL_USERS_DB_KEY, JSON.stringify(merged));
       setAccountsMap(merged);
-    } catch {}
+    } catch { }
     setRefreshing(false);
   };
 
@@ -332,7 +378,7 @@ export function AdminPanelPage() {
           if (!error && data?.user) {
             verified = true;
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -376,12 +422,28 @@ export function AdminPanelPage() {
     if (addToast) addToast(`Updated Admin login credentials for ${em}`, 'success');
   };
 
+  const syncProfileUpdateToCloud = async (targetUser, fields) => {
+    if (!isLiveSupabase) return;
+    const payload = { ...fields, updated_at: new Date().toISOString() };
+    try {
+      if (targetUser?.id && targetUser.id !== 'local') {
+        const { error } = await supabase.from('profiles').update(payload).eq('id', targetUser.id);
+        if (!error) return;
+      }
+      if (targetUser?.email) {
+        await supabase.from('profiles').update(payload).eq('email', targetUser.email.toLowerCase());
+      }
+    } catch {}
+  };
+
   const handleApproveBkash = async (txIndex) => {
     const tx = bkashList[txIndex];
     if (!tx) return;
+    const verifiedAt = new Date().toISOString();
+    const updatedTx = { ...tx, status: 'approved', verifiedAt };
 
     const updatedTxList = bkashList.map((item, idx) =>
-      idx === txIndex ? { ...item, status: 'approved', verifiedAt: new Date().toISOString() } : item
+      idx === txIndex ? updatedTx : item
     );
     setBkashList(updatedTxList);
     localStorage.setItem(BKASH_TX_LOG_KEY, JSON.stringify(updatedTxList));
@@ -398,29 +460,46 @@ export function AdminPanelPage() {
       setAccountsMap(updatedMap);
     }
 
+    if (isLiveSupabase) {
+      try {
+        await supabase
+          .from('activity_logs')
+          .update({ status: 'approved', details: JSON.stringify(updatedTx) })
+          .eq('id', tx.id);
+      } catch {}
+    }
+
     if (user?.email?.toLowerCase() === emKey) {
       await updateUserProfile({ plan: tx.plan });
-    } else if (isLiveSupabase && tx.userId) {
-      try {
-        await supabase.from('profiles').update({ plan: tx.plan }).eq('id', tx.userId);
-      } catch {}
+    } else {
+      await syncProfileUpdateToCloud({ id: tx.userId, email: emKey }, { plan: tx.plan });
     }
 
     if (addToast) addToast(`Approved TrxID ${tx.trxId} • Upgraded ${tx.userEmail} to ${tx.plan}`, 'success');
   };
 
-  const handleRejectBkash = (txIndex) => {
+  const handleRejectBkash = async (txIndex) => {
     const tx = bkashList[txIndex];
     if (!tx) return;
+    const updatedTx = { ...tx, status: 'rejected', rejectedAt: new Date().toISOString() };
     const updatedTxList = bkashList.map((item, idx) =>
-      idx === txIndex ? { ...item, status: 'rejected' } : item
+      idx === txIndex ? updatedTx : item
     );
     setBkashList(updatedTxList);
     localStorage.setItem(BKASH_TX_LOG_KEY, JSON.stringify(updatedTxList));
+
+    if (isLiveSupabase) {
+      try {
+        await supabase
+          .from('activity_logs')
+          .update({ status: 'rejected', details: JSON.stringify(updatedTx) })
+          .eq('id', tx.id);
+      } catch {}
+    }
     if (addToast) addToast(`Rejected TrxID ${tx.trxId}`, 'info');
   };
 
-  // Admin Action: Change User Plan Quota
+  // Admin Action: Change User Plan Quota (Synced to Supabase across all devices)
   const handleChangeUserPlan = async (targetUser, newPlanDisplayName) => {
     const updatedMap = { ...accountsMap };
     const emKey = targetUser.email.toLowerCase();
@@ -433,6 +512,8 @@ export function AdminPanelPage() {
 
     if (targetUser.isCurrentUser) {
       await updateUserProfile({ plan: newPlanDisplayName });
+    } else {
+      await syncProfileUpdateToCloud(targetUser, { plan: newPlanDisplayName });
     }
     if (inspectTarget && inspectTarget.email.toLowerCase() === emKey) {
       setInspectTarget(prev => prev ? { ...prev, planDisplay: newPlanDisplayName } : null);
@@ -440,8 +521,8 @@ export function AdminPanelPage() {
     if (addToast) addToast(`Updated ${targetUser.username}'s plan to ${newPlanDisplayName}`, 'success');
   };
 
-  // Admin Action: Toggle Suspend / Activate User
-  const handleToggleUserStatus = (targetUser) => {
+  // Admin Action: Toggle Suspend / Activate User (Persisted to Supabase & enforced on login/session)
+  const handleToggleUserStatus = async (targetUser) => {
     if (targetUser.isCurrentUser) {
       if (addToast) addToast('Cannot suspend your own active admin account.', 'error');
       return;
@@ -455,10 +536,12 @@ export function AdminPanelPage() {
     };
     localStorage.setItem(LOCAL_USERS_DB_KEY, JSON.stringify(updatedMap));
     setAccountsMap(updatedMap);
+
+    await syncProfileUpdateToCloud(targetUser, { status: nextStatus });
     if (addToast) addToast(`${targetUser.username} is now ${nextStatus}.`, 'info');
   };
 
-  // Admin Action: Reset Forgotten PIN for User
+  // Admin Action: Reset Forgotten PIN for User (Synced to Supabase across all devices)
   const handleResetUserPin = async (targetUser) => {
     requestConfirm({
       title: 'Reset User Security PIN',
@@ -483,9 +566,11 @@ export function AdminPanelPage() {
               const p = JSON.parse(savedLocal);
               p.pin = null;
               localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(p));
-            } catch {}
+            } catch { }
           }
-          await updateUserProfile({ pin: null });
+          await updatePin(null);
+        } else {
+          await syncProfileUpdateToCloud(targetUser, { pin: null });
         }
         if (addToast) addToast(`Cleared 4-digit PIN for ${targetUser.username}`, 'success');
       }
@@ -493,7 +578,7 @@ export function AdminPanelPage() {
   };
 
   // Admin Action: Provision New User Account
-  const handleCreateUser = (e) => {
+  const handleCreateUser = async (e) => {
     e.preventDefault();
     const em = newUserEmail.trim().toLowerCase();
     const nm = newUserName.trim();
@@ -506,6 +591,7 @@ export function AdminPanelPage() {
       return;
     }
 
+    const now = new Date().toISOString();
     const id = 'usr_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now().toString(36);
     const created = {
       id,
@@ -516,12 +602,29 @@ export function AdminPanelPage() {
       pin: null,
       role: 'User',
       status: 'active',
-      createdAt: new Date().toISOString()
+      createdAt: now
     };
 
     const updatedMap = { ...accountsMap, [em]: created };
     localStorage.setItem(LOCAL_USERS_DB_KEY, JSON.stringify(updatedMap));
     setAccountsMap(updatedMap);
+
+    if (isLiveSupabase) {
+      try {
+        await supabase.from('profiles').upsert({
+          id,
+          email: em,
+          username: nm,
+          plan: newUserPlan,
+          theme: 'dark',
+          pin: null,
+          status: 'active',
+          created_at: now,
+          updated_at: now
+        }, { onConflict: 'id' });
+      } catch {}
+    }
+
     setNewUserName('');
     setNewUserEmail('');
     setIsAddUserOpen(false);

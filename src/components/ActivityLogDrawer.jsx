@@ -20,7 +20,7 @@ export function ActivityLogDrawer() {
   const { isActivityLogOpen, setIsActivityLogOpen, activityLogs, clearActivityLogs, setIsAnalyticsOpen } = useStorage();
   const [filterAction, setFilterAction] = useState('ALL');
 
-  const logs = activityLogs || [];
+  const logs = useMemo(() => activityLogs || [], [activityLogs]);
 
   // Data Analytics Metrics
   const uploadCount = logs.filter(l => l.action === 'UPLOAD').length;
@@ -34,6 +34,18 @@ export function ActivityLogDrawer() {
     if (filterAction === 'TRASH') return logs.filter(l => ['TRASH', 'RESTORE'].includes(l.action));
     return logs;
   }, [logs, filterAction]);
+
+  const formatLogDetails = (act) => {
+    if (act.action === 'BKASH_REQUEST' && act.details) {
+      try {
+        const tx = JSON.parse(act.details);
+        return `bKash ${tx.plan || 'Upgrade'} • TrxID ${tx.trxId || ''} (${act.status || tx.status || 'pending'})`;
+      } catch {
+        return 'bKash Subscription Request';
+      }
+    }
+    return act.details || act.action;
+  };
 
   if (!isActivityLogOpen) return null;
 
@@ -210,7 +222,7 @@ export function ActivityLogDrawer() {
 
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: '500', fontSize: '0.82rem', color: 'var(--text-primary)', wordBreak: 'break-word' }}>
-                      {act.details || act.action}
+                      {formatLogDetails(act)}
                     </div>
                     <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                       {new Date(act.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} &bull; {new Date(act.timestamp).toLocaleDateString()}

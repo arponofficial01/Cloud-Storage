@@ -232,6 +232,38 @@ Live Vault Context (Reference only when relevant):
 
   let lastError = null;
 
+  // Helper: invoke Vercel serverless Gemini proxy (/api/gemini) so production works with server-side GEMINI_API_KEY
+  const queryServerlessProxy = async () => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    try {
+      const response = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData?.error || `Proxy HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      if (data?.text && typeof data.text === 'string' && data.text.trim()) {
+        return data.text.trim();
+      }
+      throw new Error('Empty proxy response');
+    } catch (err) {
+      clearTimeout(timeoutId);
+      throw err;
+    }
+  };
+
+  // In production deployments (where VITE_GEMINI_API_KEY is not bundled client-side), use the secure Vercel serverless proxy directly
+  if (!activeKey) {
+    return await queryServerlessProxy();
+  }
+
   for (const modelName of GEMINI_MODELS) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 7500);
@@ -270,5 +302,10 @@ Live Vault Context (Reference only when relevant):
     }
   }
 
-  throw lastError || new Error('Gemini service temporarily unavailable');
+  // Fallback to serverless proxy if direct client call failed
+  try {
+    return await queryServerlessProxy();
+  } catch (proxyErr) {
+    throw lastError || proxyErr || new Error('Gemini service temporarily unavailable');
+  }
 }

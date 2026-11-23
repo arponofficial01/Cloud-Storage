@@ -21,8 +21,8 @@ import {
   syncActivityLogToSupabase,
   deleteFileFromSupabase,
   deleteFolderFromSupabase,
-  fetchFilesFromSupabase,
-  fetchFoldersFromSupabase,
+  fetchFilesFromSupabaseWithStatus,
+  fetchFoldersFromSupabaseWithStatus,
   fetchActivityLogsFromSupabase,
   subscribeToSupabaseRealtime,
   uploadFileBlobToSupabase,
@@ -44,6 +44,13 @@ export function StorageProvider({ children }) {
   const [folders, setFolders] = useState([]);
   const [activityLogs, setActivityLogs] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  // Refs for steady non-racy bridge syncing & cross-device permanent deletion tombstones
+  const filesRef = React.useRef(files);
+  const foldersRef = React.useRef(folders);
+  const recentlyDeletedIdsRef = React.useRef(new Set());
+  filesRef.current = files;
+  foldersRef.current = folders;
 
   // Active Navigation & View State — persisted in localStorage so refresh keeps the same view
   const [activeCategory, setActiveCategoryRaw] = useState(() => localStorage.getItem('vault_activeCategory') || 'all');
@@ -375,20 +382,36 @@ export function StorageProvider({ children }) {
       setActivityLogs(localLogs);
       setLoading(false);
 
-      // 2. Background Cloud Sync from Supabase (Cross-Device Master Index)
-      const [remoteFiles, remoteFolders, remoteLogs] = await Promise.all([
-        fetchFilesFromSupabase(user.id),
-        fetchFoldersFromSupabase(user.id),
+      // 2. Background Cloud Sync from Supabase (Cross-Device Master Index + Zombie Delete Reconciliation)
+      const [filesRes, foldersRes, remoteLogs] = await Promise.all([
+        fetchFilesFromSupabaseWithStatus(user.id),
+        fetchFoldersFromSupabaseWithStatus(user.id),
         fetchActivityLogsFromSupabase(user.id)
       ]);
 
+      const remoteFiles = filesRes.items || [];
+      const remoteFolders = foldersRes.items || [];
       const remoteFileIds = new Set(remoteFiles.map(rf => rf.id));
       const remoteFolderIds = new Set(remoteFolders.map(rf => rf.id));
 
-      // Merge local + remote files
+      // Merge local + remote files (purge local items that were already synced once and permanently deleted on another device)
       const fileMap = new Map();
-      localFiles.forEach(f => fileMap.set(f.id, f));
+      const zombieFileIds = [];
+      localFiles.forEach(f => {
+        if (recentlyDeletedIdsRef.current.has(f.id)) {
+          zombieFileIds.push(f.id);
+          return;
+        }
+        if (filesRes.ok && f.syncedToCloud && !remoteFileIds.has(f.id)) {
+          zombieFileIds.push(f.id);
+          return;
+        }
+        fileMap.set(f.id, f);
+      });
+      zombieFileIds.forEach(id => dbDeleteFile(id));
+
       remoteFiles.forEach(rf => {
+        if (recentlyDeletedIdsRef.current.has(rf.id)) return;
         const existing = fileMap.get(rf.id);
         const merged = {
           ...existing,
@@ -397,21 +420,37 @@ export function StorageProvider({ children }) {
           parts: rf.parts || existing?.parts || null,
           isChunked: rf.isChunked || existing?.isChunked || false,
           storageProvider: rf.storageProvider || existing?.storageProvider || null,
-          blob: existing?.blob instanceof Blob ? existing.blob : (rf.blob || null)
+          blob: existing?.blob instanceof Blob ? existing.blob : (rf.blob || null),
+          syncedToCloud: true
         };
         fileMap.set(rf.id, merged);
         dbSaveFile(merged);
       });
 
-      // Merge local + remote folders
+      // Merge local + remote folders (purge permanently deleted remote folders)
       const folderMap = new Map();
-      localFolders.forEach(f => folderMap.set(f.id, f));
+      const zombieFolderIds = [];
+      localFolders.forEach(f => {
+        if (recentlyDeletedIdsRef.current.has(f.id)) {
+          zombieFolderIds.push(f.id);
+          return;
+        }
+        if (foldersRes.ok && f.syncedToCloud && !remoteFolderIds.has(f.id)) {
+          zombieFolderIds.push(f.id);
+          return;
+        }
+        folderMap.set(f.id, f);
+      });
+      zombieFolderIds.forEach(id => dbDeleteFolder(id));
+
       remoteFolders.forEach(rf => {
+        if (recentlyDeletedIdsRef.current.has(rf.id)) return;
         const existing = folderMap.get(rf.id);
         const merged = {
           ...existing,
           ...rf,
-          category: rf.category || existing?.category || 'all'
+          category: rf.category || existing?.category || 'all',
+          syncedToCloud: true
         };
         folderMap.set(rf.id, merged);
         dbSaveFolder(merged);
@@ -432,19 +471,22 @@ export function StorageProvider({ children }) {
       setFolders(mergedFoldersList);
       setActivityLogs(Array.from(logMap.values()));
 
-      // Push any local-only folders up to Supabase so other devices receive them
-      localFolders.forEach(lf => {
-        if (!remoteFolderIds.has(lf.id)) {
-          syncFolderToSupabase(lf);
+      // Push ONLY genuinely new unsynced local folders up to Supabase (never resurrect remotely deleted folders)
+      mergedFoldersList.forEach(async (lf) => {
+        if (!remoteFolderIds.has(lf.id) && !lf.syncedToCloud && !recentlyDeletedIdsRef.current.has(lf.id)) {
+          const ok = await syncFolderToSupabase(lf);
+          if (ok) {
+            const marked = { ...lf, syncedToCloud: true };
+            await dbSaveFolder(marked);
+            setFolders(prev => prev.map(f => f.id === lf.id ? marked : f));
+          }
         }
       });
 
-      // Heal & sync all files across Telegram Cloud + Supabase:
-      // 1) If a file has a local blob but no telegramFileId, upload it to Telegram Cloud and sync to Supabase
-      // 2) If a file is already on Telegram Cloud but not yet in Supabase remoteFiles, push metadata to Supabase
-      // 3) If a file was synced from another device via Supabase (has telegramFileId/parts, no local blob), download its binary blob from Telegram Cloud so it opens in 0ms
+      // Heal & sync all active files across Telegram Cloud + Supabase
       if (isTelegramCloudEnabled()) {
         mergedFilesList.forEach(async (mf) => {
+          if (recentlyDeletedIdsRef.current.has(mf.id)) return;
           if (mf.blob instanceof Blob && !mf.telegramFileId) {
             try {
               const tgRes = await uploadFileToTelegram(mf.name, mf.blob);
@@ -459,14 +501,20 @@ export function StorageProvider({ children }) {
                   parts: tgRes.parts || null,
                   isChunked: tgRes.isChunked || false
                 };
+                const ok = await syncFileToSupabase(updated);
+                if (ok) updated.syncedToCloud = true;
                 await dbSaveFile(updated);
                 setFiles(prev => prev.map(f => f.id === mf.id ? updated : f));
-                await syncFileToSupabase(updated);
               }
             } catch {}
           } else {
-            if (!remoteFileIds.has(mf.id)) {
-              syncFileToSupabase(mf);
+            if (!remoteFileIds.has(mf.id) && !mf.syncedToCloud) {
+              const ok = await syncFileToSupabase(mf);
+              if (ok) {
+                const marked = { ...mf, syncedToCloud: true };
+                await dbSaveFile(marked);
+                setFiles(prev => prev.map(f => f.id === mf.id ? marked : f));
+              }
             }
             if (!(mf.blob instanceof Blob) && (mf.telegramFileId || (mf.parts && mf.parts.length > 0))) {
               try {
@@ -475,7 +523,8 @@ export function StorageProvider({ children }) {
                   const healed = {
                     ...mf,
                     type: inferMimeType(mf.name, mf.type),
-                    blob: restoredBlob
+                    blob: restoredBlob,
+                    syncedToCloud: true
                   };
                   await dbSaveFile(healed);
                   setFiles(prev => prev.map(f => f.id === mf.id ? healed : f));
@@ -520,26 +569,141 @@ export function StorageProvider({ children }) {
       debounceTimer = setTimeout(() => reloadVault(), 300);
     };
 
-    const unsubscribe = subscribeToSupabaseRealtime(user.id, () => {
+    const unsubscribe = subscribeToSupabaseRealtime(user.id, (payload) => {
+      if (payload?.eventType === 'DELETE' && payload?.old?.id) {
+        const deletedId = payload.old.id;
+        recentlyDeletedIdsRef.current.add(deletedId);
+        if (payload.table === 'vault_files') {
+          dbDeleteFile(deletedId);
+          setFiles(prev => prev.filter(f => f.id !== deletedId));
+        } else if (payload.table === 'vault_folders') {
+          dbDeleteFolder(deletedId);
+          setFolders(prev => prev.filter(f => f.id !== deletedId));
+        }
+      }
       debouncedReload();
     });
 
+    const handleVaultFocus = () => {
+      if (document.visibilityState === 'visible') {
+        debouncedReload();
+      }
+    };
+    window.addEventListener('focus', debouncedReload);
+    document.addEventListener('visibilitychange', handleVaultFocus);
+
     return () => {
       clearTimeout(debounceTimer);
+      window.removeEventListener('focus', debouncedReload);
+      document.removeEventListener('visibilitychange', handleVaultFocus);
       unsubscribe();
     };
   }, [user?.id]);
 
   // Live Bi-Directional Sync with Windows WebDAV Zero-Disk Cloud Drive Bridge (http://127.0.0.1:8080)
+  // Always PULLS Explorer mutations FIRST before pushing Web App state so paste/rename/delete NEVER collide!
+  const lastExplorerPullAtRef = React.useRef(0);
+
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
+    let isSyncing = false;
 
-    const pushAndPullBridge = async () => {
+    const pushAndPullBridge = async (skipPushIfEvents = true) => {
+      if (isSyncing || cancelled) return;
+      isSyncing = true;
       try {
+        // 1. PULL FIRST: Drain Windows Explorer mutations (paste, create folder, rename, move, delete)
+        const statusRes = await fetch('http://127.0.0.1:8080/api/status');
+        if (!statusRes.ok || cancelled) {
+          isSyncing = false;
+          return;
+        }
+        const statusData = await statusRes.json();
+        const events = Array.isArray(statusData.explorerEvents) ? statusData.explorerEvents : [];
+
+        if (events.length > 0) {
+          lastExplorerPullAtRef.current = Date.now();
+          for (const evt of events) {
+            if (evt.type === 'UPSERT_FILE' && evt.file) {
+              const existingLocal = filesRef.current.find(f => f.id === evt.file.id);
+              let blob = existingLocal?.blob instanceof Blob ? existingLocal.blob : null;
+
+              // Fetch live bytes from bridge RAM cache when created/updated from Windows Explorer
+              if (evt.file.size > 0 && (!blob || blob.size !== evt.file.size)) {
+                try {
+                  const cacheRes = await fetch(`http://127.0.0.1:8080/api/cached-file?id=${encodeURIComponent(evt.file.id)}`);
+                  if (cacheRes.ok) {
+                    const arrBuf = await cacheRes.arrayBuffer();
+                    const mime = inferMimeType(evt.file.name, evt.file.type);
+                    blob = new Blob([arrBuf], { type: mime });
+                  }
+                } catch {}
+              }
+
+              const cat = getCategoryFromMime(evt.file.type || '', evt.file.name || '');
+              const newRec = {
+                ...(existingLocal || {}),
+                ...evt.file,
+                userId: user.id,
+                type: inferMimeType(evt.file.name, evt.file.type),
+                category: cat,
+                blob
+              };
+              delete newRec.base64Content;
+
+              await dbSaveFile(newRec);
+              setFiles(prev => [newRec, ...prev.filter(f => f.id !== newRec.id)]);
+              syncFileToSupabase(newRec).then(ok => {
+                if (ok) {
+                  const syncedRec = { ...newRec, syncedToCloud: true };
+                  dbSaveFile(syncedRec);
+                  setFiles(prev => prev.map(f => f.id === newRec.id ? syncedRec : f));
+                }
+              });
+            } else if ((evt.type === 'CREATE_FOLDER' || evt.type === 'UPDATE_FOLDER') && evt.folder) {
+              const existingFold = foldersRef.current.find(f => f.id === evt.folder.id);
+              const newFold = {
+                ...(existingFold || {}),
+                ...evt.folder,
+                userId: user.id
+              };
+              await dbSaveFolder(newFold);
+              setFolders(prev => [newFold, ...prev.filter(f => f.id !== newFold.id)]);
+              syncFolderToSupabase(newFold).then(ok => {
+                if (ok) {
+                  const syncedFold = { ...newFold, syncedToCloud: true };
+                  dbSaveFolder(syncedFold);
+                  setFolders(prev => prev.map(f => f.id === newFold.id ? syncedFold : f));
+                }
+              });
+            } else if (evt.type === 'DELETE_FILE' && evt.id) {
+              recentlyDeletedIdsRef.current.add(evt.id);
+              await dbDeleteFile(evt.id);
+              setFiles(prev => prev.filter(f => f.id !== evt.id));
+              deleteFileFromSupabase(evt.id);
+            } else if (evt.type === 'DELETE_FOLDER' && evt.id) {
+              recentlyDeletedIdsRef.current.add(evt.id);
+              await dbDeleteFolder(evt.id);
+              setFolders(prev => prev.filter(f => f.id !== evt.id));
+              deleteFolderFromSupabase(evt.id);
+            }
+          }
+          if (skipPushIfEvents) {
+            isSyncing = false;
+            return;
+          }
+        }
+
+        // 2. PUSH: Only send Web App state when no Explorer edits occurred in the last 3 seconds
+        if (Date.now() - lastExplorerPullAtRef.current < 3000) {
+          isSyncing = false;
+          return;
+        }
+
         const planObj = getPlanQuota(user?.plan);
-        const activeF = files.filter(f => !f.inTrash);
-        const activeFold = folders.filter(f => !f.inTrash);
+        const activeF = (filesRef.current || []).filter(f => !f.inTrash);
+        const activeFold = (foldersRef.current || []).filter(fd => !fd.inTrash);
         const totalB = activeF.reduce((acc, f) => acc + (f.size || 0), 0);
 
         await fetch('http://127.0.0.1:8080/api/sync', {
@@ -554,6 +718,8 @@ export function StorageProvider({ children }) {
               category: f.category || 'document',
               folderId: f.folderId || null,
               telegramFileId: f.telegramFileId || null,
+              parts: f.parts || null,
+              isChunked: Boolean(f.isChunked),
               createdAt: f.createdAt,
               updatedAt: f.updatedAt
             })),
@@ -570,58 +736,20 @@ export function StorageProvider({ children }) {
             planName: planObj.displayName
           })
         });
-
-        const statusRes = await fetch('http://127.0.0.1:8080/api/status');
-        if (!statusRes.ok || cancelled) return;
-        const statusData = await statusRes.json();
-
-        if (Array.isArray(statusData.explorerEvents) && statusData.explorerEvents.length > 0) {
-          for (const evt of statusData.explorerEvents) {
-            if (evt.type === 'UPSERT_FILE' && evt.file) {
-              let blob = null;
-              if (evt.file.base64Content) {
-                try {
-                  const byteChars = atob(evt.file.base64Content);
-                  const byteArr = new Uint8Array(byteChars.length);
-                  for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i);
-                  blob = new Blob([byteArr], { type: evt.file.type || 'application/octet-stream' });
-                } catch {}
-              }
-              const cat = getCategoryFromMime(evt.file.type || '', evt.file.name || '');
-              const newRec = {
-                ...evt.file,
-                userId: user.id,
-                category: cat,
-                blob
-              };
-              delete newRec.base64Content;
-              await dbSaveFile(newRec);
-              setFiles(prev => [newRec, ...prev.filter(f => f.id !== newRec.id && f.name !== newRec.name)]);
-            } else if (evt.type === 'CREATE_FOLDER' && evt.folder) {
-              const newFold = { ...evt.folder, userId: user.id };
-              await dbSaveFolder(newFold);
-              setFolders(prev => [newFold, ...prev.filter(f => f.id !== newFold.id)]);
-            } else if (evt.type === 'DELETE_FILE' && evt.id) {
-              await dbDeleteFile(evt.id);
-              setFiles(prev => prev.filter(f => f.id !== evt.id));
-            } else if (evt.type === 'DELETE_FOLDER' && evt.id) {
-              await dbDeleteFolder(evt.id);
-              setFolders(prev => prev.filter(f => f.id !== evt.id));
-            }
-          }
-        }
       } catch {
         // Local bridge daemon not active yet — ignore silently
+      } finally {
+        isSyncing = false;
       }
     };
 
     pushAndPullBridge();
-    const interval = setInterval(pushAndPullBridge, 4000);
+    const interval = setInterval(pushAndPullBridge, 1800);
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [user, files, folders]);
+  }, [user]);
 
   // Log User Activity to IndexedDB & Supabase
   const logActivity = async (action, details, status = 'success') => {
@@ -759,7 +887,12 @@ export function StorageProvider({ children }) {
     // Background cloud sync: upload binary to Telegram Cloud AND sync metadata + telegramFileId to Supabase for cross-device sync
     addedRecords.forEach(async (r) => {
       try {
-        await syncFileToSupabase(r);
+        const syncedInitial = await syncFileToSupabase(r);
+        if (syncedInitial) {
+          r.syncedToCloud = true;
+          await dbSaveFile(r);
+          setFiles(prev => prev.map(f => f.id === r.id ? { ...f, syncedToCloud: true } : f));
+        }
         if (r.blob && isTelegramCloudEnabled()) {
           const tgResult = await uploadFileToTelegram(r.name, r.blob);
           if (tgResult && tgResult.fileId) {
@@ -768,17 +901,19 @@ export function StorageProvider({ children }) {
             r.telegramMessageId = tgResult.messageId;
             r.parts = tgResult.parts || null;
             r.isChunked = tgResult.isChunked || false;
+            const syncedFinal = await syncFileToSupabase(r);
+            if (syncedFinal) r.syncedToCloud = true;
             await dbSaveFile(r);
             setFiles(prev => prev.map(f => f.id === r.id ? { ...f, ...r } : f));
-            await syncFileToSupabase(r);
           }
         } else if (r.blob) {
           const storagePath = await uploadFileBlobToSupabase(user.id, r.id, r.name, r.blob);
           if (storagePath) {
             r.storagePath = storagePath;
+            const syncedFinal = await syncFileToSupabase(r);
+            if (syncedFinal) r.syncedToCloud = true;
             await dbSaveFile(r);
             setFiles(prev => prev.map(f => f.id === r.id ? { ...f, ...r } : f));
-            await syncFileToSupabase(r);
           }
         }
       } catch (err) {
@@ -900,7 +1035,13 @@ export function StorageProvider({ children }) {
     };
     setFolders(prev => [folderRecord, ...prev]);
     await dbSaveFolder(folderRecord);
-    syncFolderToSupabase(folderRecord);
+    syncFolderToSupabase(folderRecord).then(ok => {
+      if (ok) {
+        const marked = { ...folderRecord, syncedToCloud: true };
+        dbSaveFolder(marked);
+        setFolders(prev => prev.map(f => f.id === folderRecord.id ? marked : f));
+      }
+    });
     addToast(`Created folder "${name.trim()}"`, 'success');
     logActivity('CREATE_FOLDER', `Created folder "${name.trim()}"`, 'success');
     return folderRecord;
@@ -920,7 +1061,13 @@ export function StorageProvider({ children }) {
       setActivePreview(recordWithUser);
     }
     await dbSaveFile(recordWithUser);
-    syncFileToSupabase(recordWithUser);
+    syncFileToSupabase(recordWithUser).then(ok => {
+      if (ok) {
+        const marked = { ...recordWithUser, syncedToCloud: true };
+        dbSaveFile(marked);
+        setFiles(prev => prev.map(f => f.id === recordWithUser.id ? { ...f, syncedToCloud: true } : f));
+      }
+    });
 
     // Background stream to Telegram Cloud and sync telegramFileId to Supabase so every device receives the file
     if (recordWithUser.blob instanceof Blob && isTelegramCloudEnabled()) {
@@ -934,9 +1081,10 @@ export function StorageProvider({ children }) {
             parts: tgResult.parts || null,
             isChunked: tgResult.isChunked || false
           };
+          const ok = await syncFileToSupabase(synced);
+          if (ok) synced.syncedToCloud = true;
           await dbSaveFile(synced);
           setFiles(prev => prev.map(f => f.id === recordWithUser.id ? synced : f));
-          await syncFileToSupabase(synced);
         }
       }).catch(() => {});
     }
@@ -1047,14 +1195,15 @@ export function StorageProvider({ children }) {
   };
 
   const deletePermanently = async (id, isFolder) => {
+    recentlyDeletedIdsRef.current.add(id);
     if (isFolder) {
       setFolders(prev => prev.filter(f => f.id !== id));
       await dbDeleteFolder(id);
-      deleteFolderFromSupabase(id);
+      await deleteFolderFromSupabase(id);
     } else {
       setFiles(prev => prev.filter(f => f.id !== id));
       await dbDeleteFile(id);
-      deleteFileFromSupabase(id);
+      await deleteFileFromSupabase(id);
     }
     addToast('Item permanently deleted', 'info');
   };
@@ -1174,6 +1323,7 @@ export function StorageProvider({ children }) {
   const batchDeletePermanently = async (targetIds = null) => {
     const selected = Array.isArray(targetIds) && targetIds.length > 0 ? targetIds : [...selectedItems];
     if (selected.length === 0) return;
+    selected.forEach(id => recentlyDeletedIdsRef.current.add(id));
     setFolders(prev => prev.filter(f => !selected.includes(f.id)));
     setFiles(prev => prev.filter(f => !selected.includes(f.id)));
     clearSelection();
@@ -1190,24 +1340,34 @@ export function StorageProvider({ children }) {
     addToast(`Permanently deleted ${selected.length} item(s)`, 'info');
   };
 
-  // ZIP Selected Files Engine
+  // ZIP Selected Files Engine (Hydrates cloud-only files from Telegram/Supabase before archiving)
   const zipSelectedFiles = async (customZipName = null) => {
     const selected = selectedItems.length > 0 ? selectedItems : displayedFiles.map(f => f.id);
-    const targetFiles = files.filter(f => selected.includes(f.id) && f.blob);
+    const targetFiles = files.filter(f => selected.includes(f.id) && !f.inTrash);
 
     if (targetFiles.length === 0) {
       addToast('No valid files selected to zip.', 'warning');
       return;
     }
 
-    addToast(`Compressing ${targetFiles.length} file(s) into ZIP archive...`, 'info');
+    addToast(`Preparing & compressing ${targetFiles.length} file(s) into ZIP archive...`, 'info');
     try {
       const JSZipModule = (await import('jszip')).default;
       const zip = new JSZipModule();
 
-      targetFiles.forEach(f => {
-        zip.file(f.name, f.blob);
-      });
+      let addedCount = 0;
+      for (const f of targetFiles) {
+        const hydratedBlob = f.blob instanceof Blob ? f.blob : await ensureFileBlob(f);
+        if (hydratedBlob instanceof Blob) {
+          zip.file(f.name, hydratedBlob);
+          addedCount++;
+        }
+      }
+
+      if (addedCount === 0) {
+        addToast('Could not retrieve file contents from Cloud Vault for ZIP.', 'error');
+        return;
+      }
 
       const zipBlob = await zip.generateAsync({ type: 'blob' });
       const zipFileName = customZipName || `Vault_Archive_${Date.now()}.zip`;
@@ -1230,25 +1390,32 @@ export function StorageProvider({ children }) {
 
       await saveFile(newZipRecord);
       clearSelection();
-      addToast(`Created ZIP Archive "${zipFileName}"`, 'success');
+      addToast(`Created ZIP Archive "${zipFileName}" (${addedCount} file${addedCount === 1 ? '' : 's'})`, 'success');
     } catch (err) {
       console.error(err);
       addToast('Failed to create ZIP archive.', 'error');
     }
   };
 
-  // UNZIP Archive File Engine
+  // UNZIP Archive File Engine (Hydrates cloud-only ZIP blobs automatically)
   const unzipFile = async (zipFileRecord) => {
-    if (!zipFileRecord || !zipFileRecord.blob) {
+    if (!zipFileRecord) {
       addToast('Invalid ZIP file.', 'error');
       return;
     }
 
     try {
       addToast(`Extracting "${zipFileRecord.name}"...`, 'info');
+      const archiveBlob = zipFileRecord.blob instanceof Blob
+        ? zipFileRecord.blob
+        : await ensureFileBlob(zipFileRecord);
+      if (!(archiveBlob instanceof Blob)) {
+        addToast('Could not fetch ZIP archive from Cloud Vault.', 'error');
+        return;
+      }
       const JSZipModule = (await import('jszip')).default;
       const zip = new JSZipModule();
-      const content = await zip.loadAsync(zipFileRecord.blob);
+      const content = await zip.loadAsync(archiveBlob);
       const extractedFiles = [];
 
       for (const [filename, fileObj] of Object.entries(content.files)) {

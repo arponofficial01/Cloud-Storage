@@ -14,6 +14,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { useStorage } from '../context/StorageContext';
 import { STORAGE_PLANS, BKASH_MERCHANT_NUMBER, getPlanQuota, formatBytes } from '../utils/planQuotas';
+import { supabase, isLiveSupabase } from '../lib/supabaseClient';
 
 export function SubscriptionModal({ isOpen, onClose }) {
   const { user, updateUserProfile } = useAuth();
@@ -72,25 +73,44 @@ export function SubscriptionModal({ isOpen, onClose }) {
 
     setFormError('');
     setIsProcessing(true);
-    await new Promise(r => setTimeout(r, 850));
+
+    const txRecord = {
+      id: `tx_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      userId: user?.id || 'local',
+      userName: user?.username || 'Vault User',
+      userEmail: user?.email || 'user@storagebank.vault',
+      plan: checkoutPlan.displayName,
+      amount: checkoutPlan.priceLabel || `৳${checkoutPlan.priceBDT} BDT`,
+      senderBkash: cleanPhone,
+      trxId: trxId.trim().toUpperCase(),
+      status: 'pending',
+      timestamp: new Date().toISOString()
+    };
 
     try {
       const txRaw = localStorage.getItem('storagebank_bkash_transactions');
       const txList = txRaw ? JSON.parse(txRaw) : [];
-      txList.unshift({
-        id: `tx_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        userId: user?.id || 'local',
-        userName: user?.username || 'Vault User',
-        userEmail: user?.email || 'user@storagebank.vault',
-        plan: checkoutPlan.displayName,
-        amount: checkoutPlan.priceLabel,
-        senderBkash: cleanPhone,
-        trxId: trxId.trim().toUpperCase(),
-        status: 'pending',
-        timestamp: new Date().toISOString()
-      });
+      txList.unshift(txRecord);
       localStorage.setItem('storagebank_bkash_transactions', JSON.stringify(txList.slice(0, 50)));
     } catch {}
+
+    // Persist cross-device to Supabase so Admin Console on any PC/phone immediately sees the pending TrxID
+    if (isLiveSupabase) {
+      try {
+        await supabase.from('activity_logs').upsert({
+          id: txRecord.id,
+          user_id: txRecord.userId,
+          action: 'BKASH_REQUEST',
+          details: JSON.stringify(txRecord),
+          timestamp: txRecord.timestamp,
+          status: 'pending'
+        }, { onConflict: 'id' });
+      } catch (err) {
+        console.warn('[bKash Sync] Cloud queue warning:', err);
+      }
+    }
+
+    await new Promise(r => setTimeout(r, 400));
 
     setIsProcessing(false);
     setPaymentSuccess(true);

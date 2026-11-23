@@ -110,6 +110,7 @@ export function AuthProvider({ children }) {
       plan:            pick(meta.plan, prof?.plan, 'Free Tier (512 GB)'),
       theme:           pick(meta.theme, prof?.theme, 'dark'),
       pin:             resolvedPin,
+      status:          prof?.status || 'active',
       autoLockMinutes: resolvedAutoLock,
       isLocal:         false
     };
@@ -170,6 +171,15 @@ export function AuthProvider({ children }) {
         const liveSupaUser = res?.data?.user;
         if (liveSupaUser) {
           const prof = await fetchProfile(liveSupaUser);
+          if (prof?.status === 'suspended') {
+            try { await supabase.auth.signOut(); } catch {}
+            localStorage.removeItem(LOCAL_USER_KEY);
+            if (mounted) {
+              setUser(null);
+              setProfile(null);
+            }
+            return;
+          }
           const u = buildUser(liveSupaUser, prof);
           setProfile(prof);
           setUser(u);
@@ -224,6 +234,14 @@ export function AuthProvider({ children }) {
           if (!mounted) return;
           if (session?.user) {
             const prof = await fetchProfile(session.user);
+            if (prof?.status === 'suspended') {
+              try { await supabase.auth.signOut(); } catch {}
+              localStorage.removeItem(LOCAL_USER_KEY);
+              setUser(null);
+              setProfile(null);
+              setAuthLoading(false);
+              return;
+            }
             const u    = buildUser(session.user, prof);
             setProfile(prof);
             setUser(u);
@@ -238,7 +256,7 @@ export function AuthProvider({ children }) {
                 avatar: u.avatar,
                 plan: u.plan,
                 theme: u.theme,
-                updated_at: new Date().toISOString()
+                updated_at: prof?.updated_at || new Date().toISOString()
               }, { onConflict: 'id' });
             } catch {}
           } else if (event === 'SIGNED_OUT') {
@@ -367,6 +385,9 @@ export function AuthProvider({ children }) {
             // Check if this is a local-only account created while offline
             const localAcc = getLocalAccounts()[normalizedEmail];
             if (localAcc && localAcc.password && localAcc.password === password) {
+              if (localAcc.status === 'suspended') {
+                return { success: false, error: 'This account has been suspended by the administrator.' };
+              }
               const cleanExisting = { ...localAcc, avatar: sanitizeAvatarForStorage(localAcc.avatar) };
               safeSetLocalStorage(LOCAL_USER_KEY, JSON.stringify(cleanExisting));
               setUser(cleanExisting);
@@ -385,6 +406,16 @@ export function AuthProvider({ children }) {
         } else if (data?.user) {
           const prof = await fetchProfile(data.user);
           const localCached = getLocalAccounts()[normalizedEmail];
+          if (prof?.status === 'suspended' || (!prof && localCached?.status === 'suspended')) {
+            try { await supabase.auth.signOut(); } catch {}
+            localStorage.removeItem(LOCAL_USER_KEY);
+            setUser(null);
+            setProfile(null);
+            return {
+              success: false,
+              error: 'This account has been suspended by the administrator.'
+            };
+          }
           const u = buildUser(data.user, prof || localCached);
           setUser(u);
           saveLocalAccount(u);
@@ -412,6 +443,9 @@ export function AuthProvider({ children }) {
     const existing = accounts[normalizedEmail];
 
     if (existing) {
+      if (existing.status === 'suspended') {
+        return { success: false, error: 'This account has been suspended by the administrator.' };
+      }
       if (existing.password && existing.password !== password) {
         return { success: false, error: 'Incorrect password for this account.' };
       }
